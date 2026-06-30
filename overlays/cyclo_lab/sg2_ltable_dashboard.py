@@ -37,9 +37,10 @@ ROBOT_PROFILES: dict[str, dict[str, str]] = {
         "robot_type": "FFW_SH5",
         "vr_model": "sh5",
         "hand": "true",
-        # SH5 lift follows headset height (stand up / crouch). Head joint
-        # publishing stays OFF so the head camera stays on the task.
-        "vr_extra_args": "enable_lift_publishing:=true lift_control_mode:=head",
+        # SH5 lift is LOCKED for hands tasks: VR does not publish lift commands,
+        # so the lift holds the per-task reset height. Head publishing stays OFF
+        # so the head camera stays on the task.
+        "vr_extra_args": "enable_lift_publishing:=false",
         "urdf": (
             "/root/ros2_ws/install/ffw_description/share/ffw_description/urdf/"
             "ffw_sh5_rev1_follower/ffw_sh5_follower.urdf"

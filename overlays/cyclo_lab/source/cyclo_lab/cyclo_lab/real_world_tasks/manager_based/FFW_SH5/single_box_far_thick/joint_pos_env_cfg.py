@@ -21,7 +21,7 @@ class EventCfg:
             "joint_positions": {
                 "arm_l_joint1": 0.75, "arm_l_joint4": -2.30,
                 "arm_r_joint1": 0.75, "arm_r_joint4": -2.30,
-                "head_joint1": 0.549, "lift_joint": -0.0993,
+                "head_joint1": 0.549, "lift_joint": -0.15,
             },
             "asset_cfg": SceneEntityCfg("robot"),
         },
