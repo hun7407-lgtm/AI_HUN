@@ -84,7 +84,7 @@ class ObservationsCfg:
                     "arm_l_joint5", "arm_l_joint6", "arm_l_joint7", "gripper_l_joint1",
                     "arm_r_joint1", "arm_r_joint2", "arm_r_joint3", "arm_r_joint4",
                     "arm_r_joint5", "arm_r_joint6", "arm_r_joint7", "gripper_r_joint1",
-                    "head_joint1", "head_joint2", "lift_joint",
+                    "head_joint1", "lift_joint", "head_joint2",
                 ],
                 "asset_name": "robot",
             },
@@ -97,7 +97,7 @@ class ObservationsCfg:
                     "arm_l_joint5", "arm_l_joint6", "arm_l_joint7", "gripper_l_joint1",
                     "arm_r_joint1", "arm_r_joint2", "arm_r_joint3", "arm_r_joint4",
                     "arm_r_joint5", "arm_r_joint6", "arm_r_joint7", "gripper_r_joint1",
-                    "head_joint1", "head_joint2", "lift_joint",
+                    "head_joint1", "lift_joint", "head_joint2",
                 ],
                 "asset_name": "robot",
             },
@@ -273,11 +273,13 @@ class PickPlaceLTableEnvCfg(ManagerBasedRLEnvCfg):
                 asset_name="robot",
                 joint_names=["head_joint1", "head_joint2"],
                 scale=1.0,
+                use_default_offset=False,
             )
             self.actions.lift_action = mdp.JointPositionActionCfg(
                 asset_name="robot",
                 joint_names=["lift_joint"],
                 scale=1.0,
+                use_default_offset=False,
             )
         else:
             raise ValueError(f"Unknown action mode: {mode}")

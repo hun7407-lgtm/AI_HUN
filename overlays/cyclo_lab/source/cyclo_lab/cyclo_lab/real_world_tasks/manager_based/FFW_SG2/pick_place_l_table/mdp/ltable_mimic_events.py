@@ -12,16 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MDP functions for the L-table dual-gripper box pick-and-place task."""
+from __future__ import annotations
 
-from isaaclab.envs.mdp import *  # noqa: F401, F403
+from typing import TYPE_CHECKING
 
-from cyclo_lab.real_world_tasks.manager_based.FFW_SG2.pick_place.mdp.observations import (  # noqa: F401
-    eef_pose,
-    joint_pos_name,
-    joint_pos_target_name,
-    last_action,
-)
-from .observations import *  # noqa: F401, F403
-from .terminations import *  # noqa: F401, F403
-from .ltable_mimic_events import scripted_l_motion_step  # noqa: F401
+import torch
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedEnv
+
+
+def scripted_l_motion_step(env: ManagerBasedEnv, env_ids: torch.Tensor) -> None:
+    """Advance kinematic L-motion during mimic datagen (rotate + drive toward left table)."""
+    if not getattr(env.cfg, "scripted_l_motion_enable", False):
+        return
+    controller = getattr(env, "_l_motion_ctrl", None)
+    if controller is None:
+        return
+    controller.step_interval(env_ids)

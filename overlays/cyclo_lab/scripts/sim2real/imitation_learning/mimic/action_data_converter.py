@@ -51,11 +51,12 @@ def convert_joint_to_ik_omy(ep_data: EpisodeData) -> EpisodeData:
 def _ffw_sg2_joint_action_indices(num_actions: int) -> tuple[int, int, slice, slice]:
     """Map FFW_SG2 joint-space action layout to gripper/head/lift indices.
 
-    Standard layout (19): [arm_l(7), gripper_l(1), arm_r(7), gripper_r(1), head(2), lift(1)]
+    Standard layout (19): [arm_l(7), gripper_l(1), arm_r(7), gripper_r(1), lift(1), head(2)]
     Legacy layout (22): extra gripper_l mimic joints at 8-10; only joint1 is used for IK.
     """
     if num_actions == 19:
-        return 7, 15, slice(16, 18), slice(18, 19)
+        # Record/action-manager order: [..., lift_joint(16), head_joint1(17), head_joint2(18)]
+        return 7, 15, slice(17, 19), slice(16, 17)
     if num_actions >= 22:
         return 7, 18, slice(20, 22), slice(19, 20)
     raise ValueError(f"FFW_SG2 joint actions expected 19 or 22 dims, got {num_actions}")

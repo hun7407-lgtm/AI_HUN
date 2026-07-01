@@ -92,7 +92,15 @@ import isaaclab_mimic.envs  # noqa: F401
 
 if args_cli.enable_pinocchio:
     import isaaclab_mimic.envs.pinocchio_envs  # noqa: F401
-from isaaclab_mimic.datagen.generation import env_loop, setup_async_generation, setup_env_config
+import pathlib
+import sys
+
+_MIMIC_SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(_MIMIC_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_MIMIC_SCRIPT_DIR))
+
+from cyclo_mimic_datagen import enable_cyclo_body_joint_replay, setup_cyclo_async_generation
+from isaaclab_mimic.datagen.generation import env_loop, setup_env_config
 from isaaclab_mimic.datagen.utils import get_env_name_from_dataset, setup_output_paths
 
 import isaaclab_tasks  # noqa: F401
@@ -125,6 +133,8 @@ def main():
 
     if not isinstance(env, ManagerBasedRLMimicEnv):
         raise ValueError("The environment should be derived from ManagerBasedRLMimicEnv")
+
+    enable_cyclo_body_joint_replay()
 
     # Check if the mimic API from this environment contains decprecated signatures
     if "action_noise_dict" not in inspect.signature(env.target_eef_pose_to_action).parameters:
@@ -170,7 +180,7 @@ def main():
         env.cfg.datagen_config.use_skillgen = True
 
     # Setup and run async data generation
-    async_components = setup_async_generation(
+    async_components = setup_cyclo_async_generation(
         env=env,
         num_envs=args_cli.num_envs,
         input_file=args_cli.input_file,

@@ -39,6 +39,12 @@ parser.add_argument("--seed", type=int, default=42, help="Seed for the environme
 parser.add_argument("--step_hz", type=int, default=60, help="Environment stepping rate in Hz.")
 parser.add_argument("--dataset_file", type=str, default="./datasets/dataset.hdf5", help="File path to export recorded demos.")
 parser.add_argument("--num_demos", type=int, default=0, help="Number of demonstrations to record. Set to 0 for infinite.")
+parser.add_argument(
+    "--auto_success",
+    action="store_true",
+    default=False,
+    help="Auto-save when the task success term is met. Default: manual save with N / right trigger.",
+)
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -214,6 +220,8 @@ def main():
     def maybe_auto_save_on_success() -> None:
         """Poll task success while recording (even between teleop frames)."""
         nonlocal success_streak
+        if not args_cli.auto_success:
+            return
         if (
             not start_record_state
             or auto_success_term_cfg is None

@@ -16,30 +16,18 @@
 
 from __future__ import annotations
 
-from isaaclab.envs.mimic_env_cfg import SubTaskConfig
+import math
+
+from isaaclab.envs.mimic_env_cfg import (
+    SubTaskConfig,
+    SubTaskConstraintConfig,
+    SubTaskConstraintCoordinationScheme,
+    SubTaskConstraintType,
+)
 
 
-def configure_dual_arm_box_mimic(
-    cfg,
-    *,
-    datagen_name: str,
-    place_signal: str,
-    place_description: str,
-    arm_side: str = "right",
-) -> None:
-    """Attach standard grasp → place subtasks for L-table style box demos."""
-    cfg.datagen_config.name = datagen_name
-    cfg.datagen_config.generation_guarantee = True
-    cfg.datagen_config.generation_keep_failed = False
-    cfg.datagen_config.generation_num_trials = 10
-    cfg.datagen_config.generation_select_src_per_subtask = True
-    cfg.datagen_config.generation_transform_first_robot_pose = False
-    cfg.datagen_config.generation_interpolate_from_last_target_pose = True
-    cfg.datagen_config.generation_relative = True
-    cfg.datagen_config.max_num_failures = 25
-    cfg.datagen_config.seed = 42
-
-    subtask_configs = [
+def _box_subtask_configs(*, place_signal: str, place_description: str) -> list[SubTaskConfig]:
+    return [
         SubTaskConfig(
             object_ref="cardboard_box",
             subtask_term_signal="dual_grasp_box",
@@ -78,4 +66,68 @@ def configure_dual_arm_box_mimic(
             apply_noise_during_interpolation=False,
         ),
     ]
-    cfg.subtask_configs[f"{arm_side}_arm"] = subtask_configs
+
+
+def _apply_datagen_defaults(cfg, *, datagen_name: str) -> None:
+    cfg.datagen_config.name = datagen_name
+    cfg.datagen_config.generation_guarantee = True
+    cfg.datagen_config.generation_keep_failed = False
+    cfg.datagen_config.generation_num_trials = 10
+    cfg.datagen_config.generation_select_src_per_subtask = True
+    cfg.datagen_config.generation_transform_first_robot_pose = False
+    cfg.datagen_config.generation_interpolate_from_last_target_pose = True
+    cfg.datagen_config.generation_relative = True
+    cfg.datagen_config.max_num_failures = 25
+    cfg.datagen_config.seed = 42
+
+
+def configure_dual_arm_box_mimic(
+    cfg,
+    *,
+    datagen_name: str,
+    place_signal: str,
+    place_description: str,
+    arm_side: str = "right",
+) -> None:
+    """Attach standard grasp → place subtasks for single-EEF mimic (legacy)."""
+    _apply_datagen_defaults(cfg, datagen_name=datagen_name)
+    cfg.subtask_configs[f"{arm_side}_arm"] = _box_subtask_configs(
+        place_signal=place_signal,
+        place_description=place_description,
+    )
+
+
+def configure_ltable_dual_arm_mimic(
+    cfg,
+    *,
+    datagen_name: str,
+    place_signal: str,
+    place_description: str,
+) -> None:
+    """Bimanual L-table mimic: both arms coordinated + scripted kinematic L-motion."""
+    _apply_datagen_defaults(cfg, datagen_name=datagen_name)
+    subtasks = _box_subtask_configs(place_signal=place_signal, place_description=place_description)
+    # Skip place-subtask interpolation so L-motion state replay starts without a physics gap.
+    subtasks[1].num_interpolation_steps = 0
+    cfg.subtask_configs["left_arm"] = subtasks
+    cfg.subtask_configs["right_arm"] = subtasks
+    cfg.task_constraint_configs = [
+        SubTaskConstraintConfig(
+            eef_subtask_constraint_tuple=[("right_arm", 0), ("left_arm", 0)],
+            constraint_type=SubTaskConstraintType.COORDINATION,
+            coordination_scheme=SubTaskConstraintCoordinationScheme.REPLAY,
+            coordination_synchronize_start=True,
+        ),
+        SubTaskConstraintConfig(
+            eef_subtask_constraint_tuple=[("right_arm", 1), ("left_arm", 1)],
+            constraint_type=SubTaskConstraintType.COORDINATION,
+            coordination_scheme=SubTaskConstraintCoordinationScheme.REPLAY,
+            coordination_synchronize_start=True,
+        ),
+    ]
+    cfg.scripted_l_motion_enable = False
+    cfg.teleop_l_yaw = math.pi / 2.0
+    cfg.teleop_l_forward_m = 0.30
+    cfg.teleop_l_rotation_duration_s = 3.0
+    cfg.teleop_l_forward_duration_s = 2.0
+    cfg.teleop_l_target_label = "left table"

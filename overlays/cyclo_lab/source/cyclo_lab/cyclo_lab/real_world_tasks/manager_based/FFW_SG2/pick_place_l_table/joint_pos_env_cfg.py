@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import isaaclab.sim as sim_utils
+from isaaclab.envs import mdp as isaac_mdp
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import FrameTransformerCfg, CameraCfg
@@ -33,6 +34,11 @@ from cyclo_lab.assets.object.drop_zone_marker import L_TABLE_DROP_ZONE_MARKER_CF
 
 @configclass
 class EventCfg:
+    reset_scene_to_default = EventTerm(
+        func=isaac_mdp.reset_scene_to_default,
+        mode="reset",
+    )
+
     set_robot_joint_pose = EventTerm(
         func=ffw_sg2_pick_place_events.set_default_joint_pose,
         mode="reset",
@@ -40,7 +46,7 @@ class EventCfg:
             "joint_positions": {
                 "arm_l_joint1": 0.75, "arm_l_joint4": -2.30,
                 "arm_r_joint1": 0.75, "arm_r_joint4": -2.30,
-                "head_joint1": 0.549, "lift_joint": -0.0993,
+                "head_joint1": 0.549, "lift_joint": 0.0365,
             },
             "asset_cfg": SceneEntityCfg("robot"),
         },

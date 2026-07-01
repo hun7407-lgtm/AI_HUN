@@ -215,6 +215,9 @@ def main():
 
     env_cfg = parse_env_cfg(env_name, device=args_cli.device, num_envs=1)
     env_cfg.init_action_cfg("mimic_ik")
+    if hasattr(env_cfg, "scripted_l_motion_enable"):
+        # Annotate replays recorded states; scripted L-motion would fight that.
+        env_cfg.scripted_l_motion_enable = False
 
     env_cfg.env_name = env_name
 
@@ -349,6 +352,42 @@ def main():
     return successful_task_count
 
 
+def _episode_has_step_states(episode: EpisodeData) -> bool:
+    """Return True when the episode includes per-step scene states."""
+    states = episode.data.get("states")
+    return isinstance(states, dict) and len(states) > 0
+
+
+def _state_to_device(state: dict, device: torch.device) -> dict:
+    """Move a nested scene-state dict onto the simulation device."""
+    output: dict = {}
+    for asset_type, assets in state.items():
+        output[asset_type] = {}
+        for asset_name, fields in assets.items():
+            output[asset_type][asset_name] = {
+                key: value.to(device) if isinstance(value, torch.Tensor) else value
+                for key, value in fields.items()
+            }
+    return output
+
+
+def _apply_recorded_step_state(env: ManagerBasedRLMimicEnv, episode: EpisodeData, state_index: int) -> bool:
+    """Apply a recorded post-step scene state (robot base, box, joints, etc.).
+
+    VR L-table demos record kinematic L-motion outside the action vector. Replaying IK
+    arm commands alone leaves the base at its spawn pose; restoring recorded states after
+    each step keeps annotate aligned with the teleop trajectory.
+    """
+    step_state = episode.get_state(state_index)
+    if step_state is None:
+        return False
+    step_state = _state_to_device(step_state, env.device)
+    # Use scene.reset_to directly so we do not trigger recorder pre/post-reset hooks.
+    env.scene.reset_to(step_state, env_ids=None, is_relative=True)
+    env.sim.forward()
+    return True
+
+
 def replay_episode(
     env: ManagerBasedRLMimicEnv,
     episode: EpisodeData,
@@ -372,9 +411,14 @@ def replay_episode(
     # read initial state and actions from the loaded episode
     initial_state = episode.data["initial_state"]
     actions = episode.data["actions"]
+    replay_recorded_states = _episode_has_step_states(episode)
+    episode.next_state_index = 0
+    episode.next_action_index = 0
     env.sim.reset()
     env.recorder_manager.reset()
     env.reset_to(initial_state, None, is_relative=True)
+    if replay_recorded_states:
+        print("\tReplaying with recorded per-step states (kinematic base/box poses).")
     first_action = True
     for action_index, action in enumerate(actions):
         current_action_index = action_index
@@ -388,6 +432,8 @@ def replay_episode(
                 continue
         action_tensor = torch.Tensor(action).reshape([1, action.shape[0]])
         env.step(torch.Tensor(action_tensor))
+        if replay_recorded_states:
+            _apply_recorded_step_state(env, episode, action_index)
     if success_term is not None:
         if not bool(success_term.func(env, **success_term.params)[0]):
             return False

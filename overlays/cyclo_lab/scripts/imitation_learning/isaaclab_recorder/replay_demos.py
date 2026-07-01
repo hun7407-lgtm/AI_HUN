@@ -38,6 +38,19 @@ parser.add_argument(
     default=False,
     help="Enable Pinocchio.",
 )
+parser.add_argument(
+    "--action_mode",
+    type=str,
+    default="record",
+    choices=["record", "mimic_ik", "inference"],
+    help="Action layout for replay. Use 'record' for raw joint teleop demos, 'mimic_ik' for IK datasets.",
+)
+parser.add_argument(
+    "--no_replay_recorded_states",
+    action="store_true",
+    default=False,
+    help="Disable per-step recorded state playback (kinematic L-motion will not replay correctly).",
+)
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -84,6 +97,41 @@ def play_cb():
 def pause_cb():
     global is_paused
     is_paused = True
+
+
+def _episode_has_step_states(episode: EpisodeData) -> bool:
+    """Return True when the episode includes per-step scene states."""
+    states = episode.data.get("states")
+    return isinstance(states, dict) and len(states) > 0
+
+
+def _state_to_device(state: dict, device: torch.device) -> dict:
+    """Move a nested scene-state dict onto the simulation device."""
+    output: dict = {}
+    for asset_type, assets in state.items():
+        output[asset_type] = {}
+        for asset_name, fields in assets.items():
+            output[asset_type][asset_name] = {
+                key: value.to(device) if isinstance(value, torch.Tensor) else value
+                for key, value in fields.items()
+            }
+    return output
+
+
+def _apply_recorded_step_state(env, episode: EpisodeData, state_index: int, env_ids: torch.Tensor | None) -> bool:
+    """Apply a recorded post-step scene state (robot base, box, joints, etc.).
+
+    VR L-table demos record kinematic L-motion outside the action vector. Replaying
+    arm commands alone leaves the base at its spawn pose; restoring recorded states
+    after each step keeps playback aligned with the teleop trajectory.
+    """
+    step_state = episode.get_state(state_index)
+    if step_state is None:
+        return False
+    step_state = _state_to_device(step_state, env.device)
+    env.scene.reset_to(step_state, env_ids=env_ids, is_relative=True)
+    env.sim.forward()
+    return True
 
 
 def compare_states(state_from_dataset, runtime_state, runtime_env_index) -> (bool, str):
@@ -144,10 +192,14 @@ def main():
     num_envs = args_cli.num_envs
 
     env_cfg = parse_env_cfg(env_name, device=args_cli.device, num_envs=num_envs)
+    if hasattr(env_cfg, "init_action_cfg"):
+        env_cfg.init_action_cfg(args_cli.action_mode)
 
     # Disable all recorders and terminations
     env_cfg.recorders = {}
     env_cfg.terminations = {}
+
+    replay_recorded_states = not args_cli.no_replay_recorded_states
 
     # create environment from loaded config
     env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
@@ -203,9 +255,13 @@ def main():
                                 episode_names[next_episode_index], env.device
                             )
                             env_episode_data_map[env_id] = episode_data
+                            episode_data.next_state_index = 0
+                            episode_data.next_action_index = 0
                             # Set initial state for the new episode
                             initial_state = episode_data.get_initial_state()
                             env.reset_to(initial_state, torch.tensor([env_id], device=env.device), is_relative=True)
+                            if replay_recorded_states and _episode_has_step_states(episode_data):
+                                print(f"\tReplaying with recorded per-step states (kinematic base/box poses).")
                             # Get the first action for the new episode
                             env_next_action = env_episode_data_map[env_id].get_next_action()
                             has_next_action = True
@@ -221,6 +277,17 @@ def main():
                         env.sim.render()
                         continue
                 env.step(actions)
+
+                if replay_recorded_states:
+                    for env_id in range(num_envs):
+                        episode_data = env_episode_data_map[env_id]
+                        if not _episode_has_step_states(episode_data):
+                            continue
+                        state_index = episode_data.next_action_index - 1
+                        if state_index < 0:
+                            continue
+                        env_ids = torch.tensor([env_id], dtype=torch.int64, device=env.device)
+                        _apply_recorded_step_state(env, episode_data, state_index, env_ids=env_ids)
 
                 if state_validation_enabled:
                     state_from_dataset = env_episode_data_map[0].get_next_state()

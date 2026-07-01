@@ -120,6 +120,9 @@ _selected_task = next(
 )
 ROBOT_TYPE = os.environ.get("ROBOT_TYPE", "FFW_SG2")
 NUM_DEMOS = os.environ.get("NUM_DEMOS", "0")
+AUTO_SUCCESS = os.environ.get("AUTO_SUCCESS", "0") in ("1", "true", "True")
+GENERATION_NUM_TRIALS = os.environ.get("GENERATION_NUM_TRIALS", "500")
+PIPELINE_NUM_ENVS = os.environ.get("PIPELINE_NUM_ENVS", "10")
 CYCLO_C = "cyclo_lab"
 VR_C = "robotis-applications"
 AI_C = "ai_worker"
@@ -129,10 +132,11 @@ ROS_SETUP = "source /opt/ros/jazzy/setup.bash && source /root/ros2_ws/install/se
 ENV_ROS = f"export ROS_DOMAIN_ID={ROS_DOMAIN_ID} && export RMW_IMPLEMENTATION={RMW}"
 
 _lock = threading.Lock()
-_logs: dict[str, list[str]] = {k: [] for k in ("cyclo", "vr", "ai", "recorder", "isaac")}
+_logs: dict[str, list[str]] = {k: [] for k in ("cyclo", "vr", "ai", "recorder", "isaac", "pipeline")}
 _status: dict[str, str] = {k: "stopped" for k in _logs}
 _launch_ts: dict[str, float] = {}
 _active_teleop_robot: str | None = None
+_auto_success: bool = AUTO_SUCCESS
 STARTING_GRACE_S = 90.0
 TELEOP_WARMUP_S = 6.0
 
@@ -181,6 +185,14 @@ def _set_robot(robot: str) -> bool:
         if task["robot"] == robot:
             return _set_task(label)
     return False
+
+
+def _set_auto_success(enabled: bool) -> None:
+    global _auto_success
+    with _lock:
+        _auto_success = enabled
+    mode = "auto (task success)" if enabled else "manual (N / right trigger)"
+    _log("cyclo", f"record save mode: {mode}")
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
@@ -382,12 +394,14 @@ def launch_recorder(*, ensure_teleop: bool = True) -> tuple[bool, str]:
             _log("recorder", "aborted: teleop stack failed to start for selected robot")
             return False, "teleop stack failed; see vr/ai logs"
     ds = f"{REPO_IN}/datasets/{task['dataset']}"
+    auto_flag = " --auto_success" if _auto_success else ""
     _log("recorder", f"task: {task['label']} -> {task['id']} ({profile['robot_type']})")
+    _log("recorder", f"save mode: {'auto success' if _auto_success else 'manual'}")
     cmd = (
         f"cd {REPO_IN} && export DISPLAY=:1 && {ENV_ROS} && "
         f"{ISAAC_PY} scripts/sim2real/imitation_learning/recorder/record_demos.py "
         f"--task={task['id']} --robot_type {profile['robot_type']} "
-        f"--dataset_file {ds} --num_demos {NUM_DEMOS} --enable_cameras"
+        f"--dataset_file {ds} --num_demos {NUM_DEMOS}{auto_flag} --enable_cameras"
     )
     return _spawn("recorder", CYCLO_C, cmd)
 
@@ -437,6 +451,107 @@ def launch_record() -> dict:
     return out
 
 
+def _pipeline_paths(task: dict[str, str]) -> dict[str, str]:
+    """Derive mimic-pipeline HDF5 paths from the task raw dataset name."""
+    raw_name = task["dataset"]
+    if raw_name.endswith("_raw.hdf5"):
+        base = raw_name[: -len("_raw.hdf5")]
+    else:
+        base = raw_name.removesuffix(".hdf5")
+    ds = f"{REPO_IN}/datasets"
+    return {
+        "raw": f"{ds}/{raw_name}",
+        "ik": f"{ds}/{base}_ik.hdf5",
+        "annotate": f"{ds}/{base}_annotate.hdf5",
+        "generate": f"{ds}/{base}_generate.hdf5",
+        "joint": f"{ds}/{base}_joint.hdf5",
+    }
+
+
+def _pipeline_cmd(step: str) -> tuple[str, str]:
+    """Return (log label, bash command) for a single pipeline step inside cyclo_lab container."""
+    task = _current_task()
+    profile = _current_robot_profile()
+    paths = _pipeline_paths(task)
+    robot = profile["robot_type"]
+    mimic_id = task["mimic_id"]
+    record_id = task["id"]
+    py = ISAAC_PY
+    labels = {
+        "ik": "IK convert",
+        "annotate": "annotate demos",
+        "generate": "mimic datagen",
+        "joint": "joint convert",
+        "lerobot": "LeRobot export",
+    }
+    if step not in labels:
+        raise ValueError(f"unknown pipeline step: {step}")
+    if step == "ik":
+        cmd = (
+            f"cd {REPO_IN} && {py} scripts/sim2real/imitation_learning/mimic/action_data_converter.py "
+            f"--robot_type {robot} --input_file {paths['raw']} --output_file {paths['ik']} --action_type ik"
+        )
+    elif step == "annotate":
+        cmd = (
+            f"cd {REPO_IN} && {py} scripts/sim2real/imitation_learning/mimic/annotate_demos.py "
+            f"--task {mimic_id} --auto --input_file {paths['ik']} --output_file {paths['annotate']} "
+            "--enable_cameras --headless"
+        )
+    elif step == "generate":
+        cmd = (
+            f"cd {REPO_IN} && {py} scripts/sim2real/imitation_learning/mimic/generate_dataset.py "
+            f"--device cuda --num_envs {PIPELINE_NUM_ENVS} --task {mimic_id} "
+            f"--generation_num_trials {GENERATION_NUM_TRIALS} --input_file {paths['annotate']} "
+            f"--output_file {paths['generate']} --enable_cameras --headless"
+        )
+    elif step == "joint":
+        cmd = (
+            f"cd {REPO_IN} && {py} scripts/sim2real/imitation_learning/mimic/action_data_converter.py "
+            f"--robot_type {robot} --input_file {paths['generate']} --output_file {paths['joint']} "
+            "--action_type joint"
+        )
+    else:  # lerobot
+        cmd = (
+            f"cd {REPO_IN} && lerobot-python scripts/sim2real/imitation_learning/data_converter/isaaclab2lerobot.py "
+            f"--task={record_id} --robot_type {robot} --dataset_file {paths['joint']}"
+        )
+    return labels[step], cmd
+
+
+def launch_pipeline_step(step: str) -> tuple[bool, str]:
+    label, cmd = _pipeline_cmd(step)
+    task = _current_task()
+    _log("pipeline", f"{label} for {task['label']} ({task['mimic_id']})")
+    return _spawn("pipeline", CYCLO_C, cmd)
+
+
+def launch_pipeline_full() -> None:
+    task = _current_task()
+    _log("pipeline", f"full mimic pipeline for {task['label']}")
+    parts = []
+    for step in ("ik", "annotate", "generate", "joint", "lerobot"):
+        _, cmd = _pipeline_cmd(step)
+        parts.append(cmd)
+    chain = " && ".join(parts)
+    _spawn("pipeline", CYCLO_C, chain)
+
+
+def kill_pipeline() -> tuple[bool, str]:
+    cmd = (
+        'pkill -9 -f "[a]ction_data_converter.py" 2>/dev/null; '
+        'pkill -9 -f "[a]nnotate_demos.py" 2>/dev/null; '
+        'pkill -9 -f "[g]enerate_dataset.py" 2>/dev/null; '
+        'pkill -9 -f "[i]saaclab2lerobot.py" 2>/dev/null; '
+        "sleep 1; "
+        'pgrep -f "[g]enerate_dataset.py|[a]nnotate_demos.py" >/dev/null && echo "still-running" || echo "killed"'
+    )
+    code, out = _run(["docker", "exec", CYCLO_C, "bash", "-lc", cmd])
+    killed = "killed" in (out or "")
+    _set_status("pipeline", "stopped" if killed else "running")
+    _log("pipeline", f"kill -> {out.strip() if out else '(no output)'}")
+    return killed, out or "no output"
+
+
 def _proc_running(container: str, pattern: str) -> bool:
     code, out = _run(
         ["docker", "exec", container, "bash", "-lc", f"pgrep -f '{pattern}' >/dev/null && echo yes || echo no"]
@@ -476,11 +591,19 @@ def snapshot() -> dict:
     _reconcile("ai", containers.get(AI_C, False), AI_C, "[v]r_controller_node")
     _reconcile("recorder", containers.get(CYCLO_C, False), CYCLO_C, "[r]ecord_demos.py")
     _reconcile("isaac", containers.get(CYCLO_C, False), CYCLO_C, "[i]saac-sim|[k]it/kit")
+    _reconcile(
+        "pipeline",
+        containers.get(CYCLO_C, False),
+        CYCLO_C,
+        "[a]ction_data_converter.py|[a]nnotate_demos.py|[g]enerate_dataset.py|[i]saaclab2lerobot.py",
+    )
     with _lock:
         st = dict(_status)
         logs_tail = {k: v[-30:] for k, v in _logs.items()}
+        auto_success = _auto_success
     task = _current_task()
     profile = _current_robot_profile()
+    paths = _pipeline_paths(task)
     vr_running = _running_vr_model()
     hand_running = _running_ai_hand()
     teleop_ok = _teleop_stack_matches(profile)
@@ -499,7 +622,14 @@ def snapshot() -> dict:
         "running_vr_model": vr_running,
         "running_ai_hand": hand_running,
         "grip": _read_teleop_grip(),
+        "auto_success": auto_success,
         "tasks": list(TASKS.keys()),
+        "pipeline": {
+            "paths": paths,
+            "mimic_id": task["mimic_id"],
+            "generation_num_trials": GENERATION_NUM_TRIALS,
+            "num_envs": PIPELINE_NUM_ENVS,
+        },
         "tasks_by_robot": {
             robot: [label for label, t in TASKS.items() if t["robot"] == robot]
             for robot in ROBOT_PROFILES
@@ -539,6 +669,12 @@ a{color:#60a5fa}
 <label class="tag">Task:
 <select id="task" onchange="setTask()"></select>
 </label>
+<label class="tag">Save episode:
+<select id="auto_success" onchange="setAutoSuccess()">
+<option value="manual">Manual (N key)</option>
+<option value="auto">Auto on task success</option>
+</select>
+</label>
 </div>
 <div class="row">
 <button class="primary" onclick="act('launch_all')">Launch VR + Controller</button>
@@ -547,15 +683,29 @@ a{color:#60a5fa}
 <button class="danger" onclick="act('kill_isaac')">Kill Isaac</button>
 <button class="secondary" onclick="refresh()">Refresh</button>
 </div>
+<div class="card"><h3>Mimic pipeline</h3>
+<p class="tag">Runs inside cyclo_lab container (headless). Uses selected task raw HDF5 + mimic env.</p>
+<div class="row">
+<button class="secondary" onclick="pipe('ik')">1. IK convert</button>
+<button class="secondary" onclick="pipe('annotate')">2. Annotate</button>
+<button class="secondary" onclick="pipe('generate')">3. Datagen</button>
+<button class="secondary" onclick="pipe('joint')">4. Joint convert</button>
+<button class="secondary" onclick="pipe('lerobot')">5. LeRobot export</button>
+<button class="primary" onclick="pipe('full')">Run full pipeline</button>
+<button class="danger" onclick="act('kill_pipeline')">Kill pipeline</button>
+</div>
+<pre id="pipeline_paths" style="font-size:.7rem;margin-top:.5rem"></pre>
+</div>
 <div class="card"><div id="meta"></div><div class="grid" id="status"></div></div>
 <div class="card"><h3>Logs</h3><pre id="logs"></pre></div>
 <p><b>Launch Record</b> restarts VR + motion controller for the selected robot, then starts Isaac.
 Gripper tasks use <code>model:=sg2 hand:=false</code>; hand tasks use <code>model:=sh5 hand:=true</code>.
-VR: accept cert at Vuer URL. SG2: squeeze both grips. SH5: hand gesture to toggle publishing; <code>I</code>/<code>O</code> lift up/down in Isaac. Recording: <code>B</code> start, <code>N</code> save (or auto-save on task success), <code>R</code> reset, <code>L</code> L-motion.
+VR: accept cert at Vuer URL. SG2: squeeze both grips. SH5: hand gesture to toggle publishing; <code>I</code>/<code>O</code> lift up/down in Isaac. Recording: <code>B</code> start, <code>N</code> save (manual default), <code>R</code> reset, <code>L</code> L-motion.
 B=record, L=face target table (or auto after 2s gripped), N=save, R=reset.</p>
 </main>
 <script>
 async function act(a){await fetch('/api/'+a,{method:'POST'});refresh()}
+async function pipe(step){await fetch('/api/pipeline/'+step,{method:'POST'});refresh()}
 async function setTask(){
  const label=document.getElementById('task').value;
  await fetch('/api/set_task',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:label})});
@@ -564,6 +714,11 @@ async function setTask(){
 async function setRobot(){
  const robot=document.getElementById('robot').value;
  await fetch('/api/set_robot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({robot})});
+ refresh();
+}
+async function setAutoSuccess(){
+ const mode=document.getElementById('auto_success').value;
+ await fetch('/api/set_auto_success',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_success:mode==='auto'})});
  refresh();
 }
 function fillTaskOptions(d){
@@ -582,6 +737,8 @@ async function refresh(){
  fillTaskOptions(d);
  const sel=document.getElementById('task');
  if(document.activeElement!==sel) sel.value=d.task_label;
+ const autoSel=document.getElementById('auto_success');
+ if(document.activeElement!==autoSel) autoSel.value=d.auto_success?'auto':'manual';
  const teleopCls=d.teleop_matches_task?'ok':'bad';
  const teleopTxt=d.teleop_matches_task?'matches task':'will restart on Launch Record';
  let h='<p>Robot: <b>'+d.robot_label+'</b> <span class="tag">'+d.robot+'</span><br>';
@@ -596,6 +753,7 @@ async function refresh(){
   gripTxt+=' (auto-L in '+g.auto_l_in_s+'s)';
  }
  h+='Grip: <span class="tag '+gripCls+'">'+gripTxt+'</span><br>';
+ h+='Save mode: <span class="tag">'+(d.auto_success?'auto success':'manual (N)')+'</span><br>';
  h+='Vuer: <a href="'+d.vuer_url+'" target="_blank">'+d.vuer_url+'</a> ('+d.vuer_ws+')</p>';
  document.getElementById('meta').innerHTML=h;
  let s='';
@@ -604,6 +762,12 @@ async function refresh(){
  document.getElementById('status').innerHTML=s;
  let lg='';for(const[k,lines]of Object.entries(d.logs)){lg+='=== '+k+' ===\n'+lines.join('\n')+'\n\n'}
  document.getElementById('logs').textContent=lg;
+ if(d.pipeline&&d.pipeline.paths){
+  const p=d.pipeline.paths;
+  document.getElementById('pipeline_paths').textContent=
+   'raw: '+p.raw+'\nik: '+p.ik+'\nannotate: '+p.annotate+'\ngenerate: '+p.generate+'\njoint: '+p.joint+
+   '\nmimic: '+d.pipeline.mimic_id+' | trials: '+d.pipeline.generation_num_trials+' | envs: '+d.pipeline.num_envs;
+ }
 }
 refresh();setInterval(refresh,3000);
 </script></body></html>"""
@@ -654,6 +818,22 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = kill_isaac()
             self._json(200, {"ok": ok, "msg": msg})
             return
+        if path.startswith("/api/pipeline/"):
+            step = path.rsplit("/", 1)[-1]
+            if step == "full":
+                threading.Thread(target=launch_pipeline_full, daemon=True).start()
+                self._json(200, {"ok": True, "msg": "full pipeline started"})
+                return
+            if step in ("ik", "annotate", "generate", "joint", "lerobot"):
+                ok, msg = launch_pipeline_step(step)
+                self._json(200, {"ok": ok, "msg": msg})
+                return
+            self._json(400, {"error": f"unknown pipeline step: {step}"})
+            return
+        if path == "/api/kill_pipeline":
+            ok, msg = kill_pipeline()
+            self._json(200, {"ok": ok, "msg": msg})
+            return
         if path == "/api/set_task":
             length = int(self.headers.get("Content-Length", "0") or "0")
             try:
@@ -671,6 +851,15 @@ class Handler(BaseHTTPRequestHandler):
                 body = {}
             ok = _set_robot(body.get("robot", ""))
             self._json(200 if ok else 400, {"ok": ok, "task": _current_task()})
+            return
+        if path == "/api/set_auto_success":
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                body = {}
+            _set_auto_success(bool(body.get("auto_success", False)))
+            self._json(200, {"ok": True, "auto_success": _auto_success})
             return
         self._json(404, {"error": "not found"})
 

@@ -13,21 +13,39 @@
 # limitations under the License.
 
 from isaaclab.envs.mimic_env_cfg import MimicEnvCfg
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.utils import configclass
 
-from cyclo_lab.real_world_tasks.manager_based.FFW_SG2.mimic_dual_arm import configure_dual_arm_box_mimic
+from cyclo_lab.real_world_tasks.manager_based.FFW_SG2.mimic_dual_arm import configure_ltable_dual_arm_mimic
 from cyclo_lab.real_world_tasks.manager_based.FFW_SG2.pick_place_l_table.joint_pos_env_cfg import (
+    EventCfg,
     FFWSG2PickPlaceLTableEnvCfg,
 )
+
+from . import mdp
+
+
+@configclass
+class LTableMimicEventCfg(EventCfg):
+    """Scene events for mimic datagen (includes kinematic L-motion between grasp and place)."""
+
+    scripted_l_motion = EventTerm(
+        func=mdp.scripted_l_motion_step,
+        mode="interval",
+        interval_range_s=(0.05, 0.05),
+    )
 
 
 @configclass
 class FFWSG2PickPlaceLTableMimicEnvCfg(FFWSG2PickPlaceLTableEnvCfg, MimicEnvCfg):
     """Mimic config for L-table pick and place."""
 
+    scripted_l_motion_enable: bool = False
+    events: LTableMimicEventCfg = LTableMimicEventCfg()
+
     def __post_init__(self):
         super().__post_init__()
-        configure_dual_arm_box_mimic(
+        configure_ltable_dual_arm_mimic(
             self,
             datagen_name="ltable_pick_place_box",
             place_signal="box_on_left_table",

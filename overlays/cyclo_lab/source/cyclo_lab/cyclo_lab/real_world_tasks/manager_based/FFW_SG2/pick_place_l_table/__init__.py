@@ -13,19 +13,25 @@
 # limitations under the License.
 
 import gymnasium as gym
+import os
+
+from . import agents
 
 gym.register(
     id="Cyclo-Real-Pick-Place-LTable-FFW-SG2-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     kwargs={
         "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:FFWSG2PickPlaceLTableEnvCfg",
+        "robomimic_bc_cfg_entry_point": os.path.join(
+            agents.__path__[0], "robomimic/bc_rnn_image.json"
+        ),
     },
     disable_env_checker=True,
 )
 
 _MIMIC_ENTRY = (
-    "cyclo_lab.real_world_tasks.manager_based.FFW_SG2.pick_place.pick_place_mimic_env:"
-    "FFWSG2PickPlaceMimicEnv"
+    "cyclo_lab.real_world_tasks.manager_based.FFW_SG2.pick_place_l_table.pick_place_l_table_mimic_env:"
+    "FFWSG2PickPlaceLTableMimicEnv"
 )
 
 gym.register(
