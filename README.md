@@ -6,7 +6,7 @@ This repo is intentionally small. It does not vendor the full ROBOTIS repositori
 
 ## What This Adds
 
-- `cyclo_lab` dashboard for launching the stack and selecting tasks.
+- `cyclo_lab` dashboard for launching the stack, selecting tasks, and running the Mimic pipeline step-by-step.
 - SG2 basket pick-place, L-table, box-stack, single-box-far, and thick-box variants (record + Mimic for SG2).
 - SH5 hand versions of the same tasks (record + Mimic).
 - SH5 DDS recorder support for VR hand teleoperation.
@@ -64,6 +64,34 @@ http://localhost:8765
 
 Select the task, then launch the stack from the dashboard.
 
+### Mimic pipeline (dashboard)
+
+After recording a raw `.hdf5` for the selected task, use the **Mimic pipeline** section on the dashboard (`http://localhost:8765`). Run steps **one at a time** in order and wait for each to finish before starting the next:
+
+1. **IK convert** — `*_raw.hdf5` → `*_ik.hdf5`
+2. **Annotate** — `*_ik.hdf5` → `*_annotate.hdf5`
+3. **Datagen** — `*_annotate.hdf5` → `*_generate.hdf5` (uses `cyclo_mimic_datagen.py` for lift/head + L-motion replay)
+4. **Joint convert** — `*_generate.hdf5` → `*_joint.hdf5`
+5. **LeRobot export** — `*_joint.hdf5` → LeRobot dataset
+
+Each button shows its status (`stopped` / `starting` / `running`) and whether the input file exists. Only one pipeline step runs at a time. **Run all steps sequentially** chains the five steps with waits between them.
+
+Pipeline jobs run headless inside the `cyclo_lab` container. Start that container first. Per-step logs:
+
+```bash
+docker exec cyclo_lab tail -f /tmp/sg2_ltable_pipe_ik.log
+# ik | annotate | generate | joint | lerobot
+```
+
+Optional tuning via environment variables before starting the dashboard:
+
+```bash
+export GENERATION_NUM_TRIALS=500   # datagen episode count (default 500)
+export PIPELINE_NUM_ENVS=10        # parallel Isaac envs during datagen (default 10)
+```
+
+HDF5 paths are derived from the task raw dataset name (e.g. `ffw_sg2_l_table_raw.hdf5` → `ffw_sg2_l_table_ik.hdf5`, etc.). The dashboard uses each task's `mimic_id` for annotate/datagen and the record task id for LeRobot export.
+
 ## VR Notes
 
 For SH5 hand tasks, the dashboard launches:
@@ -103,7 +131,7 @@ SG2 actions stay 19-dimensional (`gripper_l_joint1` only). SH5 actions are 57-di
 
 ### SG2 Mimic pipeline (after recording)
 
-Each SG2 dashboard task has a matching `Cyclo-Real-Mimic-*` env (see task `mimic_id` in `sg2_ltable_dashboard.py`). Example for L-table:
+Each SG2 dashboard task has a matching `Cyclo-Real-Mimic-*` env (see task `mimic_id` in `sg2_ltable_dashboard.py`). You can run the full flow from the dashboard **Mimic pipeline** section, or manually inside the `cyclo_lab` container. Example for L-table:
 
 ```bash
 # Inside cyclo_lab container
@@ -131,7 +159,7 @@ Basket pick-place uses `Cyclo-Real-Mimic-Pick-Place-FFW-SG2-v0` (upstream env, n
 
 ### SH5 Mimic pipeline (after recording)
 
-Same steps as SG2, but use `--robot_type FFW_SH5` and the SH5 `mimic_id` from the dashboard (e.g. `Cyclo-Real-Mimic-Pick-Place-LTable-FFW-SH5-v0`). IK actions are 57-dim: both arm EEF poses plus all finger/head/lift joints. During datagen, finger poses are taken from `joint_pos_target` in source demos (not the 1D curl proxy in the Mimic API).
+Same steps as SG2 (dashboard pipeline or manual commands). Use `--robot_type FFW_SH5` and the SH5 `mimic_id` from the dashboard (e.g. `Cyclo-Real-Mimic-Pick-Place-LTable-FFW-SH5-v0`). IK actions are 57-dim: both arm EEF poses plus all finger/head/lift joints. During datagen, finger poses are taken from `joint_pos_target` in source demos (not the 1D curl proxy in the Mimic API).
 
 ```bash
 RAW=./datasets/ffw_sh5_l_table_raw.hdf5
