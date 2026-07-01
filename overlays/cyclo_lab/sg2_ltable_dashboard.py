@@ -121,6 +121,28 @@ _selected_task = next(
 ROBOT_TYPE = os.environ.get("ROBOT_TYPE", "FFW_SG2")
 NUM_DEMOS = os.environ.get("NUM_DEMOS", "0")
 AUTO_SUCCESS = os.environ.get("AUTO_SUCCESS", "0") in ("1", "true", "True")
+PIPELINE_STEPS = ("ik", "annotate", "generate", "joint", "lerobot")
+PIPELINE_STEP_INPUT = {
+    "ik": "raw",
+    "annotate": "ik",
+    "generate": "annotate",
+    "joint": "generate",
+    "lerobot": "joint",
+}
+PIPELINE_PROC_PATTERN = {
+    "ik": "[a]ction_data_converter.py",
+    "annotate": "[a]nnotate_demos.py",
+    "generate": "[g]enerate_dataset.py",
+    "joint": "[a]ction_data_converter.py",
+    "lerobot": "[i]saaclab2lerobot.py",
+}
+PIPELINE_STEP_LABEL = {
+    "ik": "IK convert",
+    "annotate": "Annotate",
+    "generate": "Datagen",
+    "joint": "Joint convert",
+    "lerobot": "LeRobot export",
+}
 GENERATION_NUM_TRIALS = os.environ.get("GENERATION_NUM_TRIALS", "500")
 PIPELINE_NUM_ENVS = os.environ.get("PIPELINE_NUM_ENVS", "10")
 CYCLO_C = "cyclo_lab"
@@ -132,7 +154,11 @@ ROS_SETUP = "source /opt/ros/jazzy/setup.bash && source /root/ros2_ws/install/se
 ENV_ROS = f"export ROS_DOMAIN_ID={ROS_DOMAIN_ID} && export RMW_IMPLEMENTATION={RMW}"
 
 _lock = threading.Lock()
-_logs: dict[str, list[str]] = {k: [] for k in ("cyclo", "vr", "ai", "recorder", "isaac", "pipeline")}
+_logs: dict[str, list[str]] = {
+    k: [] for k in ("cyclo", "vr", "ai", "recorder", "isaac", "pipeline", *(
+        f"pipe_{s}" for s in PIPELINE_STEPS
+    ))
+}
 _status: dict[str, str] = {k: "stopped" for k in _logs}
 _launch_ts: dict[str, float] = {}
 _active_teleop_robot: str | None = None
@@ -240,8 +266,25 @@ def _exec_detached(key: str, container: str, bash_cmd: str, log: str) -> tuple[b
     return False, out or "exec failed"
 
 
-def _spawn(key: str, container: str, bash_cmd: str) -> tuple[bool, str]:
-    return _exec_detached(key, container, bash_cmd, f"/tmp/sg2_ltable_{key}.log")
+def _spawn(key: str, container: str, bash_cmd: str, *, log_suffix: str | None = None) -> tuple[bool, str]:
+    suffix = log_suffix if log_suffix is not None else key
+    return _exec_detached(key, container, bash_cmd, f"/tmp/sg2_ltable_{suffix}.log")
+
+
+def _container_file_exists(path: str) -> bool:
+    code, _ = _run(["docker", "exec", CYCLO_C, "test", "-f", path])
+    return code == 0
+
+
+def _pipeline_step_running(step: str) -> bool:
+    return _proc_running(CYCLO_C, PIPELINE_PROC_PATTERN[step])
+
+
+def _any_pipeline_running() -> str | None:
+    for step in PIPELINE_STEPS:
+        if _pipeline_step_running(step):
+            return step
+    return None
 
 
 def launch_containers() -> dict:
@@ -477,15 +520,7 @@ def _pipeline_cmd(step: str) -> tuple[str, str]:
     mimic_id = task["mimic_id"]
     record_id = task["id"]
     py = ISAAC_PY
-    labels = {
-        "ik": "IK convert",
-        "annotate": "annotate demos",
-        "generate": "mimic datagen",
-        "joint": "joint convert",
-        "lerobot": "LeRobot export",
-    }
-    if step not in labels:
-        raise ValueError(f"unknown pipeline step: {step}")
+    label = PIPELINE_STEP_LABEL[step]
     if step == "ik":
         cmd = (
             f"cd {REPO_IN} && {py} scripts/sim2real/imitation_learning/mimic/action_data_converter.py "
@@ -515,25 +550,62 @@ def _pipeline_cmd(step: str) -> tuple[str, str]:
             f"cd {REPO_IN} && lerobot-python scripts/sim2real/imitation_learning/data_converter/isaaclab2lerobot.py "
             f"--task={record_id} --robot_type {robot} --dataset_file {paths['joint']}"
         )
-    return labels[step], cmd
+    return label, cmd
+
+
+def _wait_pipeline_step(step: str, timeout_s: float = 14400.0) -> bool:
+    """Wait until a detached pipeline step process exits."""
+    key = f"pipe_{step}"
+    deadline = time.time() + timeout_s
+    # Give the process a moment to show up in pgrep.
+    time.sleep(2.0)
+    while time.time() < deadline:
+        if not _pipeline_step_running(step):
+            with _lock:
+                cur = _status.get(key)
+            if cur == "starting":
+                _set_status(key, "stopped")
+            return True
+        time.sleep(3.0)
+    _log("pipeline", f"{step}: timed out after {timeout_s:.0f}s")
+    return False
 
 
 def launch_pipeline_step(step: str) -> tuple[bool, str]:
-    label, cmd = _pipeline_cmd(step)
+    if step not in PIPELINE_STEPS:
+        return False, f"unknown step: {step}"
+    if not _docker_running(CYCLO_C):
+        return False, f"{CYCLO_C} container is not running"
+    busy = _any_pipeline_running()
+    if busy is not None:
+        return False, f"step '{busy}' is still running; wait or Kill pipeline"
     task = _current_task()
-    _log("pipeline", f"{label} for {task['label']} ({task['mimic_id']})")
-    return _spawn("pipeline", CYCLO_C, cmd)
+    paths = _pipeline_paths(task)
+    input_key = PIPELINE_STEP_INPUT[step]
+    input_path = paths[input_key]
+    if not _container_file_exists(input_path):
+        return False, f"missing input for {step}: {input_path}"
+    label, cmd = _pipeline_cmd(step)
+    key = f"pipe_{step}"
+    _log("pipeline", f"start {label} for {task['label']}")
+    _log(key, f"input: {input_path}")
+    return _spawn(key, CYCLO_C, cmd, log_suffix=f"pipe_{step}")
 
 
 def launch_pipeline_full() -> None:
     task = _current_task()
-    _log("pipeline", f"full mimic pipeline for {task['label']}")
-    parts = []
-    for step in ("ik", "annotate", "generate", "joint", "lerobot"):
-        _, cmd = _pipeline_cmd(step)
-        parts.append(cmd)
-    chain = " && ".join(parts)
-    _spawn("pipeline", CYCLO_C, chain)
+    _log("pipeline", f"full mimic pipeline for {task['label']} (sequential)")
+    for step in PIPELINE_STEPS:
+        ok, msg = launch_pipeline_step(step)
+        if not ok:
+            _log("pipeline", f"stopped at {step}: {msg}")
+            return
+        _log("pipeline", f"waiting for {step} to finish...")
+        if not _wait_pipeline_step(step):
+            _log("pipeline", f"failed while waiting on {step}")
+            return
+        _log("pipeline", f"finished {step}")
+    _log("pipeline", "full pipeline complete")
 
 
 def kill_pipeline() -> tuple[bool, str]:
@@ -543,11 +615,12 @@ def kill_pipeline() -> tuple[bool, str]:
         'pkill -9 -f "[g]enerate_dataset.py" 2>/dev/null; '
         'pkill -9 -f "[i]saaclab2lerobot.py" 2>/dev/null; '
         "sleep 1; "
-        'pgrep -f "[g]enerate_dataset.py|[a]nnotate_demos.py" >/dev/null && echo "still-running" || echo "killed"'
+        'pgrep -f "[g]enerate_dataset.py|[a]nnotate_demos.py|[a]ction_data_converter.py|[i]saaclab2lerobot.py" >/dev/null && echo "still-running" || echo "killed"'
     )
     code, out = _run(["docker", "exec", CYCLO_C, "bash", "-lc", cmd])
     killed = "killed" in (out or "")
-    _set_status("pipeline", "stopped" if killed else "running")
+    for step in PIPELINE_STEPS:
+        _set_status(f"pipe_{step}", "stopped")
     _log("pipeline", f"kill -> {out.strip() if out else '(no output)'}")
     return killed, out or "no output"
 
@@ -591,12 +664,13 @@ def snapshot() -> dict:
     _reconcile("ai", containers.get(AI_C, False), AI_C, "[v]r_controller_node")
     _reconcile("recorder", containers.get(CYCLO_C, False), CYCLO_C, "[r]ecord_demos.py")
     _reconcile("isaac", containers.get(CYCLO_C, False), CYCLO_C, "[i]saac-sim|[k]it/kit")
-    _reconcile(
-        "pipeline",
-        containers.get(CYCLO_C, False),
-        CYCLO_C,
-        "[a]ction_data_converter.py|[a]nnotate_demos.py|[g]enerate_dataset.py|[i]saaclab2lerobot.py",
-    )
+    for step in PIPELINE_STEPS:
+        _reconcile(
+            f"pipe_{step}",
+            containers.get(CYCLO_C, False),
+            CYCLO_C,
+            PIPELINE_PROC_PATTERN[step],
+        )
     with _lock:
         st = dict(_status)
         logs_tail = {k: v[-30:] for k, v in _logs.items()}
@@ -604,6 +678,11 @@ def snapshot() -> dict:
     task = _current_task()
     profile = _current_robot_profile()
     paths = _pipeline_paths(task)
+    inputs_ready = {
+        step: _container_file_exists(paths[PIPELINE_STEP_INPUT[step]]) if containers.get(CYCLO_C) else False
+        for step in PIPELINE_STEPS
+    }
+    step_status = {step: st.get(f"pipe_{step}", "stopped") for step in PIPELINE_STEPS}
     vr_running = _running_vr_model()
     hand_running = _running_ai_hand()
     teleop_ok = _teleop_stack_matches(profile)
@@ -629,6 +708,8 @@ def snapshot() -> dict:
             "mimic_id": task["mimic_id"],
             "generation_num_trials": GENERATION_NUM_TRIALS,
             "num_envs": PIPELINE_NUM_ENVS,
+            "steps": step_status,
+            "inputs_ready": inputs_ready,
         },
         "tasks_by_robot": {
             robot: [label for label, t in TASKS.items() if t["robot"] == robot]
@@ -684,14 +765,10 @@ a{color:#60a5fa}
 <button class="secondary" onclick="refresh()">Refresh</button>
 </div>
 <div class="card"><h3>Mimic pipeline</h3>
-<p class="tag">Runs inside cyclo_lab container (headless). Uses selected task raw HDF5 + mimic env.</p>
+<p class="tag">Run steps <b>one at a time</b> in order (wait for each to finish). Logs: <code>/tmp/sg2_ltable_pipe_&lt;step&gt;.log</code> in cyclo_lab container.</p>
+<div class="row" id="pipeline_buttons"></div>
 <div class="row">
-<button class="secondary" onclick="pipe('ik')">1. IK convert</button>
-<button class="secondary" onclick="pipe('annotate')">2. Annotate</button>
-<button class="secondary" onclick="pipe('generate')">3. Datagen</button>
-<button class="secondary" onclick="pipe('joint')">4. Joint convert</button>
-<button class="secondary" onclick="pipe('lerobot')">5. LeRobot export</button>
-<button class="primary" onclick="pipe('full')">Run full pipeline</button>
+<button class="primary" onclick="pipe('full')">Run all steps sequentially</button>
 <button class="danger" onclick="act('kill_pipeline')">Kill pipeline</button>
 </div>
 <pre id="pipeline_paths" style="font-size:.7rem;margin-top:.5rem"></pre>
@@ -705,7 +782,34 @@ B=record, L=face target table (or auto after 2s gripped), N=save, R=reset.</p>
 </main>
 <script>
 async function act(a){await fetch('/api/'+a,{method:'POST'});refresh()}
-async function pipe(step){await fetch('/api/pipeline/'+step,{method:'POST'});refresh()}
+async function pipe(step){
+ const r=await fetch('/api/pipeline/'+step,{method:'POST'});
+ const j=await r.json();
+ if(!j.ok&&j.msg){alert(j.msg)}
+ refresh();
+}
+const PIPE_STEPS=[
+ {id:'ik',n:'1. IK convert'},
+ {id:'annotate',n:'2. Annotate'},
+ {id:'generate',n:'3. Datagen'},
+ {id:'joint',n:'4. Joint convert'},
+ {id:'lerobot',n:'5. LeRobot export'},
+];
+function renderPipelineButtons(d){
+ const el=document.getElementById('pipeline_buttons');
+ if(!el)return;
+ const steps=(d.pipeline&&d.pipeline.steps)||{};
+ const ready=(d.pipeline&&d.pipeline.inputs_ready)||{};
+ const anyRun=Object.values(steps).some(s=>s==='running'||s==='starting');
+ el.innerHTML=PIPE_STEPS.map(s=>{
+  const st=steps[s.id]||'stopped';
+  const cls=st==='running'?'ok':(st==='starting'?'':'');
+  const miss=ready[s.id]===false?' (input missing)':'';
+  const dis=anyRun&&(st!=='running'&&st!=='starting')?' disabled':'';
+  return '<button class="secondary"'+dis+' onclick="pipe(\''+s.id+'\')">'+s.n+
+   ' <span class="tag '+cls+'">'+st+miss+'</span></button>';
+ }).join('');
+}
 async function setTask(){
  const label=document.getElementById('task').value;
  await fetch('/api/set_task',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:label})});
@@ -763,6 +867,7 @@ async function refresh(){
  let lg='';for(const[k,lines]of Object.entries(d.logs)){lg+='=== '+k+' ===\n'+lines.join('\n')+'\n\n'}
  document.getElementById('logs').textContent=lg;
  if(d.pipeline&&d.pipeline.paths){
+  renderPipelineButtons(d);
   const p=d.pipeline.paths;
   document.getElementById('pipeline_paths').textContent=
    'raw: '+p.raw+'\nik: '+p.ik+'\nannotate: '+p.annotate+'\ngenerate: '+p.generate+'\njoint: '+p.joint+
@@ -824,7 +929,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=launch_pipeline_full, daemon=True).start()
                 self._json(200, {"ok": True, "msg": "full pipeline started"})
                 return
-            if step in ("ik", "annotate", "generate", "joint", "lerobot"):
+            if step in PIPELINE_STEPS:
                 ok, msg = launch_pipeline_step(step)
                 self._json(200, {"ok": ok, "msg": msg})
                 return
