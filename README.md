@@ -4,6 +4,8 @@ Portable overlay for AI Worker Isaac Sim VR teleoperation tasks.
 
 This repo is intentionally small. It does not vendor the full ROBOTIS repositories and it does not include recorded datasets. Instead, `setup.sh` clones the required upstream repos at pinned commits, initializes `cyclo_lab` submodules, and copies the AIWORKER overlay files on top.
 
+**SG2 L-table data + checkpoint:** [Release sg2-ltable-20260702](https://github.com/Disniekie01/EKAIWORKER/releases/tag/sg2-ltable-20260702)
+
 ## 5-Minute Quickstart (Fresh Machine)
 
 Use this if you just cloned and want a runnable state quickly.
