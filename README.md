@@ -62,6 +62,67 @@ xhost +
 
 Then retry the play command.
 
+## End-to-End: Record -> Pipeline -> Train -> Play
+
+Use this exact flow for a new task run (example: SG2 L-table).
+
+### 1) Record demos (dashboard)
+
+Start the dashboard:
+
+```bash
+cd ~/AIWORKER/cyclo_lab
+python3 sg2_ltable_dashboard.py
+```
+
+Open `http://localhost:8765`, select your task, launch the stack, and record demos.
+
+Recorder controls in Isaac window:
+- `B` start recording
+- `N` save episode
+- `R` reset / skip episode
+- `L` trigger L-motion
+
+Raw dataset is written to `~/AIWORKER/cyclo_lab/datasets/*_raw.hdf5`.
+
+### 2) Run Mimic pipeline (dashboard)
+
+From the dashboard **Mimic pipeline** section, run steps in order:
+1. IK convert (`raw -> ik`)
+2. Annotate (`ik -> annotate`)
+3. Generate (`annotate -> generate`)
+4. Joint convert (`generate -> joint`)
+5. (Optional) LeRobot export (`joint -> lerobot`)
+
+Wait for each step to complete before starting the next.
+
+### 3) Train robomimic
+
+```bash
+docker exec -it cyclo_lab bash -lc '
+cd /workspace/cyclo_lab
+./third_party/IsaacLab/isaaclab.sh -p scripts/imitation_learning/robomimic/train.py \
+  --task Cyclo-Real-Pick-Place-LTable-FFW-SG2-v0 \
+  --algo bc \
+  --dataset ./datasets/ffw_sg2_l_table_joint.hdf5 \
+  --name ffw_sg2_l_table_bc
+'
+```
+
+### 4) Play checkpoint
+
+```bash
+docker exec -e DISPLAY=:1 -e TERM=xterm -it cyclo_lab bash -lc '
+cd /workspace/cyclo_lab
+./third_party/IsaacLab/isaaclab.sh -p scripts/imitation_learning/robomimic/play.py \
+  --device cuda \
+  --task Cyclo-Real-Pick-Place-LTable-FFW-SG2-v0 \
+  --checkpoint /workspace/cyclo_lab/logs/robomimic/Cyclo-Real-Pick-Place-LTable-FFW-SG2-v0/ffw_sg2_l_table_bc/<run_id>/models/model_epoch_20.pth \
+  --num_rollouts 3 --horizon 2000 \
+  --enable_cameras --action_mode inference --scripted_l_motion
+'
+```
+
 ## What This Adds
 
 - `cyclo_lab` dashboard for launching the stack, selecting tasks, and running the Mimic pipeline step-by-step.
