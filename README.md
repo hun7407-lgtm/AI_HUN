@@ -4,6 +4,64 @@ Portable overlay for AI Worker Isaac Sim VR teleoperation tasks.
 
 This repo is intentionally small. It does not vendor the full ROBOTIS repositories and it does not include recorded datasets. Instead, `setup.sh` clones the required upstream repos at pinned commits, initializes `cyclo_lab` submodules, and copies the AIWORKER overlay files on top.
 
+## 5-Minute Quickstart (Fresh Machine)
+
+Use this if you just cloned and want a runnable state quickly.
+
+### 1) Clone + setup
+
+```bash
+git clone https://github.com/Disniekie01/EKAIWORKER.git AIWORKER
+cd AIWORKER
+./setup.sh ~/AIWORKER
+```
+
+### 2) Start containers
+
+```bash
+cd ~/AIWORKER/cyclo_lab/docker && ./container.sh start
+cd ~/AIWORKER/robotis_applications/docker && ./container.sh start
+cd ~/AIWORKER/ai_worker/docker && ./container.sh start
+```
+
+### 3) Enable GUI (host terminal)
+
+```bash
+xhost +local:docker
+xhost +SI:localuser:root
+```
+
+### 4) Start dashboard
+
+```bash
+cd ~/AIWORKER/cyclo_lab
+python3 sg2_ltable_dashboard.py
+```
+
+Open: `http://localhost:8765`
+
+### 5) Run first SG2 L-table play test
+
+```bash
+docker exec -e DISPLAY=:1 -e TERM=xterm cyclo_lab bash -lc '
+cd /workspace/cyclo_lab
+./third_party/IsaacLab/isaaclab.sh -p scripts/imitation_learning/robomimic/play.py \
+  --device cuda \
+  --task Cyclo-Real-Pick-Place-LTable-FFW-SG2-v0 \
+  --checkpoint /PATH/TO/model_epoch_20.pth \
+  --num_rollouts 3 --horizon 2000 \
+  --enable_cameras --action_mode inference --scripted_l_motion
+'
+```
+
+If GUI does not appear, run:
+
+```bash
+xhost +
+```
+
+Then retry the play command.
+
 ## What This Adds
 
 - `cyclo_lab` dashboard for launching the stack, selecting tasks, and running the Mimic pipeline step-by-step.
