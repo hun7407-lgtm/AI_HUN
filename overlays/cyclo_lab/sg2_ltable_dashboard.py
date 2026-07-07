@@ -249,6 +249,19 @@ def _host_ip() -> str:
     return "127.0.0.1"
 
 
+def _vuer_urls(host: str | None = None) -> dict[str, str]:
+    """Vuer page + WebSocket URLs. Quest browser needs the combined ?ws= form."""
+    host = host or _host_ip()
+    base = f"https://{host}:8012"
+    ws = f"wss://{host}:8012"
+    return {
+        "vuer_url": base,
+        "vuer_ws": ws,
+        "vuer_quest_url": f"{base}?ws={ws}",
+        "vuer_quest_url_usb": "https://localhost:8012?ws=wss://localhost:8012",
+    }
+
+
 def _exec_detached(key: str, container: str, bash_cmd: str, log: str) -> tuple[bool, str]:
     # Run the command in the FOREGROUND of the detached exec (no trailing '&').
     # `docker exec -d` keeps the process alive as long as this bash stays in the
@@ -473,7 +486,7 @@ def launch_all() -> dict:
     out: dict = {"containers": launch_containers()}
     time.sleep(3)
     out["teleop"] = ensure_teleop_stack()
-    out["vuer_url"] = f"https://{_host_ip()}:8012"
+    out.update(_vuer_urls())
     profile = _current_robot_profile()
     out["note"] = (
         f"VR + controller running for {profile['robot_type']} "
@@ -490,7 +503,7 @@ def launch_record() -> dict:
     out["teleop"] = ensure_teleop_stack()
     ok, msg = launch_recorder(ensure_teleop=False)
     out["recorder"] = {"ok": ok, "msg": msg}
-    out["vuer_url"] = f"https://{_host_ip()}:8012"
+    out.update(_vuer_urls())
     return out
 
 
@@ -689,8 +702,7 @@ def snapshot() -> dict:
     return {
         "containers": containers,
         "status": st,
-        "vuer_url": f"https://{_host_ip()}:8012",
-        "vuer_ws": f"wss://{_host_ip()}:8012",
+        **_vuer_urls(),
         "task": task["id"],
         "task_label": task["label"],
         "robot": task.get("robot", "FFW_SG2"),
@@ -858,7 +870,9 @@ async function refresh(){
  }
  h+='Grip: <span class="tag '+gripCls+'">'+gripTxt+'</span><br>';
  h+='Save mode: <span class="tag">'+(d.auto_success?'auto success':'manual (N)')+'</span><br>';
- h+='Vuer: <a href="'+d.vuer_url+'" target="_blank">'+d.vuer_url+'</a> ('+d.vuer_ws+')</p>';
+ h+='Quest (WiFi): <code style="word-break:break-all">'+d.vuer_quest_url+'</code><br>';
+ h+='Quest (USB/ADB): <code style="word-break:break-all">'+d.vuer_quest_url_usb+'</code><br>';
+ h+='Vuer page: <a href="'+d.vuer_url+'" target="_blank">'+d.vuer_url+'</a> · WS: '+d.vuer_ws+'</p>';
  document.getElementById('meta').innerHTML=h;
  let s='';
  for(const[k,v]of Object.entries(d.containers))s+='<div class="tag">'+k+': <span class="'+(v?'ok':'bad')+'">'+(v?'up':'down')+'</span></div>';
@@ -970,8 +984,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    urls = _vuer_urls()
     print(f"Dashboard http://0.0.0.0:{PORT}")
-    print(f"Vuer https://{_host_ip()}:8012")
+    print(f"Quest Vuer (WiFi):  {urls['vuer_quest_url']}")
+    print(f"Quest Vuer (USB):   {urls['vuer_quest_url_usb']}")
     HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 

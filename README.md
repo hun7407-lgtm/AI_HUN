@@ -186,6 +186,14 @@ Open the dashboard at:
 http://localhost:8765
 ```
 
+**Paste this in Meta Quest Browser (WiFi, same LAN as PC):**
+
+```text
+https://<host-ip>:8012?ws=wss://<host-ip>:8012
+```
+
+Replace `<host-ip>` with your PC IP (dashboard prints the full URL after **Launch VR + Controller**). For USB tethering use `https://localhost:8012?ws=wss://localhost:8012` — see [VR Teleoperation](#vr-teleoperation--how-to-connect).
+
 Select the task, then launch the stack from the dashboard.
 
 ### Mimic pipeline (dashboard)
@@ -235,6 +243,8 @@ Replace `<host-ip>` with your PC’s LAN address. The dashboard prints it after 
 ```text
 https://<host-ip>:8012?ws=wss://<host-ip>:8012
 ```
+
+This is the address you need — both the page **and** the `ws=` parameter must use the same host (`<host-ip>` or `localhost` for USB).
 
 Example:
 
