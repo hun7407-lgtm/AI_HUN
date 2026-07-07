@@ -136,7 +136,7 @@ cd /workspace/cyclo_lab
 
 ## Upstream Pins
 
-- `cyclo_lab`: `85b237bf22068da18999bacbda5652f201594d11`
+- `cyclo_lab`: `a5ea01967b145f839ca1ac8f51b42abf9ef87036`
 - `ai_worker`: `e8c2eacb612e47473cdf03e44bee6d527c00b4f9`
 - `robotis_applications`: `7ef0aabc748174cb91013866b2e4142122ef475c`
 
