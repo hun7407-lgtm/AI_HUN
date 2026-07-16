@@ -260,6 +260,66 @@ docker exec cyclo_lab tail -f /tmp/sg2_ltable_pipe_generate.log
 
 ---
 
+## 7-1. 주행 가능 변형 (FFW_SG2_MOBILE) 🚗
+
+스톡 `FFW_SG2.usd`는 **정지 상태 매니퓰레이션용**입니다. 팔·그리퍼 물리는 진짜지만, 모바일 베이스는 아닙니다:
+
+| 스톡 자산의 제약 | 실측 |
+|---|---|
+| `FixedJoint`가 섀시(`world` 링크)를 월드에 **용접** | 물리적으로 주행 불가 |
+| 휠 drive 조인트에 **±1080° 스톱** | 3바퀴 = **1.63 m** 주행 후 정지 |
+| **좌/우 휠 충돌체 꺼짐** | 뒷바퀴 하나만 지면과 접촉 |
+| `disable_gravity=True` | 접지 개념 없음 |
+
+그래서 스톡 태스크의 베이스 이동은 바퀴 물리가 아니라 **kinematic root teleport**(`write_root_pose_to_sim`)입니다 — L-motion 주석에도 명시되어 있습니다.
+
+`FFW_SG2_MOBILE`은 이 네 가지를 푼 변형입니다. **원본 USD와 스톡 태스크는 수정하지 않습니다** (녹화/datagen 그대로 동작).
+
+```python
+from cyclo_lab.assets.robots.FFW_SG2_MOBILE import FFW_SG2_MOBILE_CFG
+from cyclo_lab.controllers import SwerveController
+
+robot = Articulation(FFW_SG2_MOBILE_CFG.replace(prim_path="/World/Robot"))
+swerve = SwerveController(robot)
+swerve.apply(vx=0.5, vy=0.0, omega=0.0)        # 로봇 기준 (m/s, rad/s)
+swerve.apply_world(vx=0.5, vy=0.0, omega=0.0)  # 월드 기준 (yaw 자동 보정)
+swerve.stop()
+robot.write_data_to_sim()
+```
+
+3륜 홀로노믹 스워브라 **전진·게걸음·제자리회전·대각선**이 모두 됩니다 (`vx`, `vy`, `ω` 3개 값 → IK가 바퀴 6개 지령으로 변환).
+
+### 도구
+
+```bash
+# 키보드 조종 (GUI) — 화살표 전후/게걸음, Z/X 회전, E/Q 속도, C 기준전환, R 리셋
+./third_party/IsaacLab/isaaclab.sh -p scripts/tools/teleop_sg2_mobile.py
+
+# 회귀 검증 (6/6 통과해야 정상)
+./third_party/IsaacLab/isaaclab.sh -p scripts/tools/check_ffw_sg2_mobile.py --headless
+
+# USD 재생성 (data/robots/FFW/FFW_SG2_MOBILE.usd)
+./third_party/IsaacLab/isaaclab.sh -p scripts/tools/build_ffw_sg2_mobile_usd.py --force
+```
+
+### 실측 성능
+
+| 항목 | 결과 |
+|---|---|
+| 착지 | `root_z=1.4054`, 잔류속도 0.040 m/s |
+| 직진 (10초) | **8.23 m**, 휠 98.7 rad(5654°) — 스톡 한계 1.63 m 돌파 |
+| 게걸음 (3초) | dy=**+1.406 m**, dx=+0.018, dyaw=+1.3° |
+| 제자리회전 (3초) | dyaw=**+125°**, 이동 0.032 m |
+| 속도 효율 | 이론 대비 **96%** (나머지는 휠 슬립) |
+
+### ⚠️ 주의
+
+- **자기충돌은 켜면 안 됩니다.** 이 변형이 되살린 휠 콜라이더가 첫 프레임에 자기 하우징과 겹쳐, PhysX가 그 침투를 **로봇을 z=700 m로 발사**해서 해소합니다. wheel↔하우징 / wheel↔섀시 pair 필터링은 **불충분함이 측정으로 확인**됨. 대가: 팔이 몸통을 통과할 수 있음.
+- **USD는 참조 레이어**(~2 KB)입니다. 41 MB 원본을 복제하지 않고 `./FFW_SG2.usd`를 참조하므로 **같은 폴더에 있어야** 합니다.
+- **`default_root_state`로 리셋하지 마세요.** 그 값은 `init_state.pos=(0,0,0.01)`이지만 루트 바디의 실제 높이는 **1.4396**입니다(USD 내부 오프셋 1.43 m). 그대로 써넣으면 로봇이 땅속에 파묻혀 바퀴가 헛돕니다. 착지 후의 실제 자세를 저장해 두고 복귀시키세요.
+
+---
+
 ## 8. 오버레이 동기화 (Overlay Sync)
 
 ```bash
