@@ -131,23 +131,87 @@ class FFWSG2PickPlaceLTableEnvCfg(PickPlaceLTableEnvCfg):
         )
         self.scene.plane.semantic_tags = [("class", "ground")]
 
+        # --- Real-robot parity cameras --------------------------------------------------
+        # Real ffw_sg2_rev1 records four RGB streams (matching lift_box_merged_lerobot_*):
+        #   cam_left_head / cam_right_head  = ZED stereo eyes on the head  (376 x 672)
+        #   cam_left_wrist / cam_right_wrist = one camera per gripper wrist ( 424 x 240 )
+        # The stock task rendered only the head left eye. The three cameras below add the
+        # rest so recordings match the real observation schema.
+        #
+        # CALIBRATE: the offsets/intrinsics here are reasonable placeholders, NOT measured
+        # against the physical rig. Tune STEREO_BASELINE and the wrist offsets by eye against
+        # the real cam_*_wrist / cam_right_head images before trusting cross-domain training.
+        _ZED_HEAD_SPAWN = sim_utils.PinholeCameraCfg(
+            focal_length=10.4,
+            focus_distance=200.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.01, 100.0),
+        )
+        # The `head_link2/zed` prim carries no explicit eye prims (measured: it is a single
+        # prim centred at y=0 on head_link2). So place the two eyes symmetric about that
+        # centre in Y. The stock cam_head used +0.03, so treat that as the half-baseline:
+        # left eye at +HALF, right eye at -HALF -> ~0.06 m baseline (ZED Mini class).
+        STEREO_HALF = 0.03
+
         self.scene.cam_head = CameraCfg(
             prim_path="{ENV_REGEX_NS}/Robot/ffw_sg2_follower/head_link2/zed/cam_head",
             update_period=0.0,
             height=376,
             width=672,
             data_types=["rgb"],
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=10.4,
-                focus_distance=200.0,
-                horizontal_aperture=20.955,
-                clipping_range=(0.01, 100.0),
-            ),
+            spawn=_ZED_HEAD_SPAWN.copy(),
             offset=CameraCfg.OffsetCfg(
-                pos=(0.0, 0.03, 0.0),
+                pos=(0.0, STEREO_HALF, 0.0),  # left eye
                 rot=(0.5, 0.5, -0.5, -0.5),
                 convention="isaac",
             ),
+        )
+        self.scene.cam_right_head = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/ffw_sg2_follower/head_link2/zed/cam_right_head",
+            update_period=0.0,
+            height=376,
+            width=672,
+            data_types=["rgb"],
+            spawn=_ZED_HEAD_SPAWN.copy(),
+            offset=CameraCfg.OffsetCfg(
+                pos=(0.0, -STEREO_HALF, 0.0),  # right eye, mirrored about the zed centre
+                rot=(0.5, 0.5, -0.5, -0.5),
+                convention="isaac",
+            ),
+        )
+
+        _WRIST_SPAWN = sim_utils.PinholeCameraCfg(
+            focal_length=8.0,
+            focus_distance=200.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.01, 100.0),
+        )
+        # Portrait 424 x 240 to match the real wrist streams. Mounted at the RealSense D405
+        # pose measured from the USD (the ``arm_*_link7/visuals/d405`` prim): the real wrist
+        # camera location. Left and right share the same local transform.
+        #   pos  = (0.10683, 0.0, -0.07713)   relative to arm_*_link7
+        #   rot  = 180 deg about Y  ->  quat (w,x,y,z) = (0, 0, 1, 0)  (d405 body frame)
+        # convention="ros" applies the RealSense optical-frame convention on top of that body
+        # orientation. If the view still faces the wrong way, adjust rot/convention here.
+        _WRIST_POS = (0.10683, 0.0, -0.07713)
+        _WRIST_ROT = (0.0, 0.0, 1.0, 0.0)
+        self.scene.cam_left_wrist = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/ffw_sg2_follower/arm_l_link7/cam_left_wrist",
+            update_period=0.0,
+            height=424,
+            width=240,
+            data_types=["rgb"],
+            spawn=_WRIST_SPAWN.copy(),
+            offset=CameraCfg.OffsetCfg(pos=_WRIST_POS, rot=_WRIST_ROT, convention="ros"),
+        )
+        self.scene.cam_right_wrist = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/ffw_sg2_follower/arm_r_link7/cam_right_wrist",
+            update_period=0.0,
+            height=424,
+            width=240,
+            data_types=["rgb"],
+            spawn=_WRIST_SPAWN.copy(),
+            offset=CameraCfg.OffsetCfg(pos=_WRIST_POS, rot=_WRIST_ROT, convention="ros"),
         )
 
         marker_cfg = FRAME_MARKER_CFG.copy()

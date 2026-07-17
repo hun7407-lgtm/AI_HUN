@@ -47,7 +47,12 @@ class LTableSceneCfg(InteractiveSceneCfg):
     cardboard_box: AssetBaseCfg = MISSING
     box_riser: AssetBaseCfg = MISSING
     drop_zone_marker: AssetBaseCfg | None = None
+    # Real-robot parity cameras. ``cam_head`` is the ZED left eye (kept under its stock name
+    # so the ~50 other references still resolve); the converter exports it as cam_left_head.
     cam_head: CameraCfg = MISSING
+    cam_right_head: CameraCfg = MISSING
+    cam_left_wrist: CameraCfg = MISSING
+    cam_right_wrist: CameraCfg = MISSING
 
     plane = AssetBaseCfg(
         prim_path="/World/GroundPlane",
@@ -110,9 +115,23 @@ class ObservationsCfg:
             func=mdp.eef_pose,
             params={"eef_cfg": SceneEntityCfg("right_eef"), "robot_cfg": SceneEntityCfg("robot")},
         )
+        # Real-robot parity: ZED stereo head (left = cam_head) + a wrist camera per arm.
+        # These ObsTerm names become the HDF5 obs keys the LeRobot converter reads.
         cam_head = ObsTerm(
             func=mdp.image,
             params={"sensor_cfg": SceneEntityCfg("cam_head"), "data_type": "rgb", "normalize": False},
+        )
+        cam_right_head = ObsTerm(
+            func=mdp.image,
+            params={"sensor_cfg": SceneEntityCfg("cam_right_head"), "data_type": "rgb", "normalize": False},
+        )
+        cam_left_wrist = ObsTerm(
+            func=mdp.image,
+            params={"sensor_cfg": SceneEntityCfg("cam_left_wrist"), "data_type": "rgb", "normalize": False},
+        )
+        cam_right_wrist = ObsTerm(
+            func=mdp.image,
+            params={"sensor_cfg": SceneEntityCfg("cam_right_wrist"), "data_type": "rgb", "normalize": False},
         )
 
         def __post_init__(self):
