@@ -26,6 +26,7 @@ from cyclo_lab.real_world_tasks.manager_based.FFW_SG2.pick_place_l_table.pick_pl
 
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from cyclo_lab.assets.robots.FFW_SG2 import FFW_SG2_CFG  # isort: skip
+from cyclo_lab.assets.robots.FFW_SG2_MOBILE import FFW_SG2_MOBILE_CFG  # isort: skip
 from cyclo_lab.assets.object.table_prim import TABLE_FRONT_CFG, TABLE_LEFT_CFG
 from cyclo_lab.assets.object.cardboard_box import CARDBOARD_BOX_CFG
 from cyclo_lab.assets.object.box_riser import BOX_RISER_CFG
@@ -243,3 +244,23 @@ class FFWSG2PickPlaceLTableEnvCfg(PickPlaceLTableEnvCfg):
                 ),
             ],
         )
+
+
+@configclass
+class FFWSG2PickPlaceLTableMobileEnvCfg(FFWSG2PickPlaceLTableEnvCfg):
+    """Drivable-base L-table variant (Plan B).
+
+    The operator drives the swerve base physically from ``/cmd_vel`` (VR thumbstick
+    translation + A/B rotation) during recording instead of the scripted L-motion. Uses the
+    FFW_SG2_MOBILE robot (free base + live wheels). Recorded base velocity gives real-robot
+    parity (linear_x/y + angular_z). The stock L-table task is left untouched.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Swap the welded stock base for the drivable FFW_SG2_MOBILE (free base + wheels).
+        self.scene.robot = FFW_SG2_MOBILE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.robot.spawn.semantic_tags = [("class", "robot")]
+        # Free base driving from cmd_vel; disable the scripted L-motion / auto-L teleport.
+        self.teleop_base_drive = True
+        self.teleop_auto_l_on_grip_s = 0.0

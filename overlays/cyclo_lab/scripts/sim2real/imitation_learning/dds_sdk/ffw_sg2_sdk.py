@@ -30,6 +30,7 @@ import isaaclab.utils.math as math_utils
 from robotis_dds_python.idl.trajectory_msgs.msg import JointTrajectory_
 from robotis_dds_python.idl.sensor_msgs.msg import JointState_
 from robotis_dds_python.idl.sensor_msgs.msg import CompressedImage_
+from robotis_dds_python.idl.geometry_msgs.msg import Twist_
 from robotis_dds_python.idl.std_msgs.msg import Header_
 from robotis_dds_python.idl.std_msgs.msg import String_
 from robotis_dds_python.idl.builtin_interfaces.msg import Time_
@@ -108,6 +109,15 @@ class FFWSG2Sdk:
         self._swerve_yaw_tol = 0.08
         self._swerve_max_angular_z = 0.6
         self._swerve_max_linear_x = 0.25
+        # Free base driving from /cmd_vel (Plan B). Enabled per-task via
+        # cfg.teleop_base_drive; replaces the scripted L-motion with live joystick control.
+        self._base_drive_enabled = False
+        self._cmd_vel_topic = "/cmd_vel"
+        self._base_cmd_vel_timeout = 0.5
+        self._latest_base_cmd_vel = (0.0, 0.0, 0.0)
+        self._last_base_cmd_vel_time = 0.0
+        self._cmd_vel_reader = None
+        self._cmd_vel_thread = None
         # Grip detection + optional auto L-motion after sustained grasp.
         self._auto_l_on_grip_s = 0.0
         self._grip_start_time: float | None = None
@@ -124,6 +134,7 @@ class FFWSG2Sdk:
 
         # DDS Topic Manager
         topic_manager = TopicManager(domain_id=self.domain_id)
+        self._topic_manager = topic_manager  # kept so the cmd_vel reader can be added later
         trajectory_qos = self.TRAJECTORY_QOS
 
         # Subscribers for both arms
@@ -189,8 +200,10 @@ class FFWSG2Sdk:
 
         self._apply_env_teleop_config()
         self.joint_names = self._resolve_action_joint_order()
-        if self._use_swerve_l_motion:
+        if self._use_swerve_l_motion or self._base_drive_enabled:
             self._init_swerve_drive()
+        if self._base_drive_enabled:
+            self._start_cmd_vel_subscriber()
         self._keyboard_controls()
 
     def _apply_env_teleop_config(self) -> None:
@@ -208,6 +221,8 @@ class FFWSG2Sdk:
         )
         self._l_motion_label = str(getattr(cfg, "teleop_l_target_label", self._l_motion_label))
         self._use_swerve_l_motion = bool(getattr(cfg, "teleop_l_use_swerve", self._use_swerve_l_motion))
+        self._base_drive_enabled = bool(getattr(cfg, "teleop_base_drive", self._base_drive_enabled))
+        self._cmd_vel_topic = str(getattr(cfg, "teleop_cmd_vel_topic", self._cmd_vel_topic))
         self._auto_l_on_grip_s = float(
             getattr(cfg, "teleop_auto_l_on_grip_s", self._auto_l_on_grip_s)
         )
@@ -687,7 +702,8 @@ class FFWSG2Sdk:
 
     def publish_observations(self):
         """Publish joint states and camera images."""
-        self._step_grip_auto_l()
+        if not self._base_drive_enabled:
+            self._step_grip_auto_l()
         # Capture the robot's home root pose once, before any L motion edits it.
         if self._home_root_pose is None:
             robot = self.env.scene["robot"]
@@ -701,10 +717,15 @@ class FFWSG2Sdk:
         # Pose reset (key 'R') takes priority over a queued face-left request.
         if pending_reset_pose:
             self._restore_home_pose()
-        elif pending_face_left:
+        elif pending_face_left and not self._base_drive_enabled:
             self.face_left_table()
-        if self._is_l_motion_active():
+
+        if self._base_drive_enabled:
+            # Free driving: cmd_vel steers the wheels physically, no scripted L-motion.
+            self._apply_base_cmd_vel()
+        elif self._is_l_motion_active():
             self._advance_l_motion()
+
         self._publish_joint_states()
         self._publish_camera("cam_head")
         # self._publish_camera("cam_wrist_right")
@@ -1144,6 +1165,61 @@ class FFWSG2Sdk:
         self._swerve_controller = SwerveDriveController(modules, wheel_radius)
         self._use_swerve_l_motion = True
         print(f"[{robot_label}] Swerve-drive L-motion enabled (cmd_vel-style base control).")
+
+    # ----------------------
+    # Free base driving from /cmd_vel (Plan B)
+    # ----------------------
+    def _start_cmd_vel_subscriber(self) -> None:
+        """Subscribe to the VR base twist and drive the swerve wheels live."""
+        if self._swerve_controller is None:
+            print("[BaseDrive] Swerve controller unavailable; base driving disabled.")
+            self._base_drive_enabled = False
+            return
+        self._cmd_vel_reader = self._topic_manager.topic_reader(
+            topic_name=self._cmd_vel_topic,
+            topic_type=Twist_,
+            qos=self.TRAJECTORY_QOS,
+        )
+        self._cmd_vel_thread = threading.Thread(
+            target=self._cmd_vel_subscriber_loop, daemon=True
+        )
+        self._cmd_vel_thread.start()
+        print(f"[BaseDrive] cmd_vel base driving enabled on {self._cmd_vel_topic}.")
+
+    def _cmd_vel_subscriber_loop(self) -> None:
+        try:
+            while self.running:
+                for msg in self._cmd_vel_reader.take_iter():
+                    self._store_base_cmd_vel(msg)
+                time.sleep(0.001)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[BaseDrive] cmd_vel subscriber exception: {exc}")
+
+    def _store_base_cmd_vel(self, msg) -> None:
+        if msg is None:
+            return
+        with self.lock:
+            self._latest_base_cmd_vel = (
+                float(msg.linear.x), float(msg.linear.y), float(msg.angular.z)
+            )
+            self._last_base_cmd_vel_time = time.monotonic()
+
+    def _current_base_cmd_vel(self) -> tuple[float, float, float]:
+        with self.lock:
+            command = self._latest_base_cmd_vel
+            last = self._last_base_cmd_vel_time
+        if last == 0.0:
+            return 0.0, 0.0, 0.0
+        if self._base_cmd_vel_timeout > 0.0 and (time.monotonic() - last) > self._base_cmd_vel_timeout:
+            return 0.0, 0.0, 0.0  # stale command -> stop the base
+        return command
+
+    def _apply_base_cmd_vel(self) -> None:
+        """Drive the swerve base physically from the latest cmd_vel (no root teleport)."""
+        if self._swerve_controller is None:
+            return
+        vx, vy, angular_z = self._current_base_cmd_vel()
+        self._apply_swerve_cmd_vel(vx, vy, angular_z, integrate_root=False)
 
     def _sim_step_dt(self) -> float:
         """Environment step duration (physics dt * decimation), not wall clock."""

@@ -29,6 +29,21 @@ gym.register(
     disable_env_checker=True,
 )
 
+# Plan B: drivable-base variant. Same task, but the operator drives the swerve base from
+# /cmd_vel (VR thumbstick + A/B) instead of the scripted L-motion, and base velocity is
+# recorded. Uses FFW_SG2_MOBILE. The stock task above is unchanged.
+gym.register(
+    id="Cyclo-Real-Pick-Place-LTable-Mobile-FFW-SG2-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:FFWSG2PickPlaceLTableMobileEnvCfg",
+        "robomimic_bc_cfg_entry_point": os.path.join(
+            agents.__path__[0], "robomimic/bc_rnn_image.json"
+        ),
+    },
+    disable_env_checker=True,
+)
+
 _MIMIC_ENTRY = (
     "cyclo_lab.real_world_tasks.manager_based.FFW_SG2.pick_place_l_table.pick_place_l_table_mimic_env:"
     "FFWSG2PickPlaceLTableMimicEnv"
