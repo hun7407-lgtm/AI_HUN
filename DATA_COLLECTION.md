@@ -2,15 +2,14 @@
 
 **Author:** Hun Kim (hun7728@hanyang.ac.kr) · **Last updated:** 2026-07-20
 
-A complete, step-by-step guide to collecting bimanual manipulation **and mobile-base**
-demonstrations in NVIDIA Isaac Sim through Meta Quest VR teleoperation, running the ROBOTIS
-IsaacLab-Mimic augmentation pipeline, and exporting to the **LeRobot** format used to train
-imitation-learning policies.
+Guide to collecting bimanual manipulation **and mobile-base** demonstrations in NVIDIA Isaac
+Sim through Meta Quest VR teleoperation, running the ROBOTIS IsaacLab-Mimic augmentation
+pipeline, and exporting to the **LeRobot** format for imitation-learning.
 
-This document walks the pipeline in the order it actually runs — **setup → environment →
-VR connection → teleoperation → recording → augmentation → conversion** — and describes both
-the stock (upstream) behaviour and the changes made in this fork. Work added on top of the
-upstream stack is tagged **[ADDED]** / **[MODIFIED]**; every touched file is listed in
+The document follows the order the pipeline runs — **setup → environment → VR connection →
+teleoperation → recording → augmentation → conversion** — and covers both the stock (upstream)
+behaviour and the changes made in this fork. Work added on top of the upstream stack is tagged
+**[ADDED]** / **[MODIFIED]**; every touched file is listed in
 [Appendix A](#appendix-a--files-added--modified).
 
 **Repository lineage.** This repo (`AI_HUN`, https://github.com/hun7407-lgtm/AI_HUN) is an
@@ -81,7 +80,7 @@ RMW = `rmw_fastrtps_cpp`, i.e. Fast DDS):
 | `robotis-applications` | `robotis/robotis-applications:1.0.0` | **Vuer VR publisher** (`vr_publisher_sg2`) | 8012 |
 | `ai_worker` | `robotis/ai-worker:2.0.0` | **arm IK controller** (`vr_controller`) | — |
 
-### 1.5 End-to-end data flow
+### 1.5 Data flow
 
 ```
 [Operator + Meta Quest 3]
@@ -196,13 +195,29 @@ initial state into an HDF5 group `data/demo_<i>`.
 
 **Terminations** — `time_out`, task `success` (box on the left table), `object_dropped`.
 
-### 3.3 Task variants
+### 3.3 Available tasks
 
-| Task ID | Base | Base motion | dims | Purpose |
-|---|---|---|---|---|
-| `Cyclo-Real-Pick-Place-LTable-FFW-SG2-v0` | welded | scripted L-motion (kinematic teleport) | 19 | stock (arms only) |
-| `Cyclo-Real-Mimic-Pick-Place-LTable-FFW-SG2-v0` | welded | (used by datagen) | 19 | Mimic augmentation env |
-| `Cyclo-Real-Pick-Place-LTable-Mobile-FFW-SG2-v0` **[ADDED]** | free | operator drives via `/cmd_vel` | 22 | mobile-base collection |
+Six SG2 tasks are selectable in the dashboard. All but the mobile one use a **fixed
+(welded) base**:
+
+| # | Dashboard label | Task ID | Base |
+|---|---|---|---|
+| 1 | Basket Pick & Place | `Cyclo-Real-Pick-Place-FFW-SG2-v0` | fixed |
+| 2 | L-Table Pick & Place (thin box) | `Cyclo-Real-Pick-Place-LTable-FFW-SG2-v0` | fixed |
+| 3 | **L-Table Pick & Place (mobile base)** **[ADDED]** | `Cyclo-Real-Pick-Place-LTable-Mobile-FFW-SG2-v0` | **free (drivable)** |
+| 4 | Box Stack (thick box) | `Cyclo-Real-Box-Stack-FFW-SG2-v0` | fixed |
+| 5 | Single Box Far (rear table) | `Cyclo-Real-Single-Box-Far-FFW-SG2-v0` | fixed |
+| 6 | Single Box Far (thick box) | `Cyclo-Real-Single-Box-Far-Thick-FFW-SG2-v0` | fixed |
+
+The **mobile (drivable) base is applied only to the L-Table Pick & Place task** (row 3). Every
+task also has a `…-Mimic-…` env used by the augmentation pipeline (§7) and a `FFW_SH5` (hand)
+counterpart. The rest of this document uses the L-Table task as the running example, but the
+recording/augmentation/conversion flow is the same for the other fixed-base tasks.
+
+| L-Table variant | Base motion | dims |
+|---|---|---|
+| `…-Pick-Place-LTable-FFW-SG2-v0` (fixed) | scripted L-motion (kinematic teleport) | 19 |
+| `…-Pick-Place-LTable-Mobile-FFW-SG2-v0` **[ADDED]** | operator drives via `/cmd_vel` (physical swerve) | 22 |
 
 ---
 
@@ -230,16 +245,23 @@ All three share `ROS_DOMAIN_ID=30`. Command topics (arms, lift, head, and `/cmd_
 
 ### 4.3 Connecting the Quest
 
-**USB / ADB tether (recommended — lowest latency jitter):**
+There are two ways to connect the headset. **USB is recommended** — it has lower latency
+jitter than WiFi (WiFi spikes show up as arm/base stutter during teleop).
+
+**USB / ADB tether (recommended):**
 ```bash
 cd ~/AIWORKER/adb_vr_connect && ./connect.sh     # re-run after every cable reconnect
 # Quest browser:  https://localhost:8012?ws=wss://localhost:8012  → accept cert → Enter VR
 ```
 One-time ADB/udev setup: `adb_vr_connect/README.md`.
 
-**WiFi (two steps in the Quest browser):**
-1. Accept cert: `https://<PC-IP>:8012` → Advanced → Proceed.
-2. New tab: `https://vuer.ai/?ws=wss://<PC-IP>:8012` → Enter VR → allow hand tracking.
+**WiFi:** two steps in the Quest browser — accept the cert at `https://<PC-IP>:8012`, then open
+`https://vuer.ai/?ws=wss://<PC-IP>:8012` and Enter VR. The full WiFi procedure is documented in
+the base repo's README:
+[`EKAIWORKER`](https://github.com/Disniekie01/EKAIWORKER) → *VR Teleoperation — How to Connect*.
+
+The general VR teleoperation setup (Vuer, headset, publisher/controller) follows the ROBOTIS
+guide: <https://docs.robotis.com/docs/systems/aiworker/quick_start_guide/operation_guide/vr_teleoperation/>.
 
 ---
 
@@ -409,7 +431,7 @@ head_joint1, head_joint2, lift_joint`.
 ## 9. Real-Robot Parity
 
 The real `ffw_sg2_rev1` records **4** RGB cameras and a **22-dim** state; the stock sim recorded
-1 camera and 19 dims. Two additions close the gap.
+1 camera and 19 dims. Two additions match the real schema.
 
 ### 9.1 Cameras **[MODIFIED]**
 
@@ -438,6 +460,21 @@ to state and action → 22-dim, matching real.
 ---
 
 ## 10. The Drivable Mobile Base **[ADDED]**
+
+### 10.1 Why a drivable base was added
+
+On the fixed-base (base-repo) form, the base repositions by a **scripted L-motion that
+kinematically teleports the robot root**. Two problems come from this:
+- The teleport fights the physics simulation — while the root is teleported, the carried box is
+  still driven by physics, so it **shakes / jitters** relative to the grippers.
+- The kinematic-teleport base motion did **not carry cleanly through data generation**
+  (IsaacLab-Mimic), so mobile-base trajectories could not be augmented reliably.
+
+To avoid the teleport-vs-physics conflict, a **physically drivable** base USD (`FFW_SG2_MOBILE`)
+was created: the base moves by actually driving its swerve wheels under physics, with no root
+teleport, so the base and the carried box stay physically consistent.
+
+### 10.2 What changed in the USD
 
 The stock `FFW_SG2.usd` is authored for stationary manipulation: a `FixedJoint` welds the
 chassis to the world, the wheel drive joints stop at ±1080°, the left/right wheel colliders are
@@ -471,9 +508,13 @@ Tools: `scripts/tools/build_ffw_sg2_mobile_usd.py` (regenerate the USD),
   handle 22 dims; the augmentation pipeline (IK convert → annotate → datagen) still targets the
   19-dim path.
 - **Camera extrinsics are placeholders** — calibrate against the physical rig.
-- **Frame drops** with 4 cameras on a saturated GPU affect teleop smoothness but **not the
-  recorded data** (each frame is the correct image at its simulation timestep; the sim simply
-  runs slower than real time).
+- **Rendering four cameras is GPU-heavy.** On the validated workstation
+  (**NVIDIA RTX PRO 5000 Blackwell Laptop, 24 GB**) frame drops do not occur in normal use — any
+  drops observed were transient. On other / lower-spec workstations, rendering four cameras may
+  saturate the GPU and cause frame drops, which slow teleop. Note that frame drops affect only
+  teleop smoothness, **not the recorded data**: each frame is still the correct image at its
+  simulation timestep; the sim just runs slower than real time. (If needed on a weaker machine,
+  run the recorder headless to drop the GUI viewport render — no effect on the data.)
 - **The action's base velocity uses the measured twist** as a stand-in for the command (the
   swerve tracks `/cmd_vel` closely).
 
