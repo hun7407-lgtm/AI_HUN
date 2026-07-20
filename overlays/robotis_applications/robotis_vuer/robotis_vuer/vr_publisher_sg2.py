@@ -165,8 +165,11 @@ class VRTrajectoryPublisher(Node):
             '/leader/joint_trajectory_command_broadcaster_right/joint_trajectory',
             self.vr_command_qos
         )
+        # RELIABLE (vr_command_qos) so it matches the SG2 SDK's RELIABLE /cmd_vel reader --
+        # a BEST_EFFORT publisher does not match a RELIABLE subscriber in DDS, which silently
+        # dropped every base command (the arms/lift/head commands already use vr_command_qos).
         self.cmd_vel_pub = self.create_publisher(
-            Twist, '/cmd_vel', self.vr_stream_qos
+            Twist, '/cmd_vel', self.vr_command_qos
         )
 
         # Wrist/elbow pose publishers for visualization
