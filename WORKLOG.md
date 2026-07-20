@@ -1,5 +1,7 @@
 # WORKLOG — 데이터 수집 진행 기록
 
+**작성자:** Hun Kim (hun7728@hanyang.ac.kr) · **수정일:** 2026-07-20
+
 VR teleoperation 기반 데이터 수집·후처리 진행 내역.
 
 ---

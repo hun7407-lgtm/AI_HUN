@@ -1,5 +1,7 @@
 # OPERATIONS — 수동 커맨드 레퍼런스
 
+**작성자:** Hun Kim (hun7728@hanyang.ac.kr) · **수정일:** 2026-07-20
+
 대시보드 대신 컨테이너 내부에서 직접 실행할 때 쓰는 상세 커맨드. 모든 명령은 `cyclo_lab` 컨테이너 안, `/workspace/cyclo_lab`에서 실행합니다.
 
 ```bash

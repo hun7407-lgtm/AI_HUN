@@ -1,5 +1,7 @@
 # Data Collection Pipeline — FFW-SG2 VR Teleoperation
 
+**Author:** Hun Kim (hun7728@hanyang.ac.kr) · **Last updated:** 2026-07-20
+
 End-to-end guide for collecting bimanual manipulation **and mobile-base** demonstrations in
 NVIDIA Isaac Sim through Meta Quest VR teleoperation, and exporting them to the **LeRobot**
 format that matches the physical `ffw_sg2_rev1` robot's data schema.

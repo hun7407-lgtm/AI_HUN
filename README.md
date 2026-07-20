@@ -1,5 +1,7 @@
 # AI_HUN — VR Teleoperation 데이터 수집 오버레이
 
+**작성자:** Hun Kim (hun7728@hanyang.ac.kr) · **수정일:** 2026-07-20
+
 > **AI Worker (ROBOTIS FFW) · Isaac Sim VR 원격조작(teleoperation) 데이터 수집·증강 파이프라인**
 > 사람이 Meta Quest 3로 로봇을 조종 → Isaac Sim에서 시연 녹화 → IsaacLab **Mimic**으로 대량 증강 → 학습용 **HDF5** 산출.
 

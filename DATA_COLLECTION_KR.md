@@ -1,5 +1,7 @@
 # 데이터 수집 파이프라인 — FFW-SG2 VR 원격조작
 
+**작성자:** Hun Kim (hun7728@hanyang.ac.kr) · **수정일:** 2026-07-20
+
 NVIDIA Isaac Sim에서 Meta Quest VR 원격조작으로 **양팔 매니퓰레이션 + 모바일 베이스**
 시연을 수집하고, 실제 `ffw_sg2_rev1` 로봇의 데이터 스키마와 일치하는 **LeRobot** 포맷으로
 내보내는 전 과정 가이드.
